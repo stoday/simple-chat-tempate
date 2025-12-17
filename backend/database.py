@@ -19,6 +19,30 @@ CREATE TABLE IF NOT EXISTS user (
 );
 """
 
+MESSAGE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS message (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    sender_type TEXT NOT NULL CHECK(sender_type IN ('user','assistant')),
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(user_id) REFERENCES user(id) ON DELETE CASCADE
+);
+"""
+
+MESSAGE_FILE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS message_file (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    file_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    mime_type TEXT,
+    size_bytes INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(message_id) REFERENCES message(id) ON DELETE CASCADE
+);
+"""
+
 
 def init_db() -> None:
     """Create the SQLite database file and ensure required tables exist."""
@@ -26,6 +50,8 @@ def init_db() -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute(USER_TABLE_SQL)
+        conn.execute(MESSAGE_TABLE_SQL)
+        conn.execute(MESSAGE_FILE_TABLE_SQL)
         conn.commit()
 
 

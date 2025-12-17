@@ -1,23 +1,37 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { useAuthStore } from '../stores/auth'
+import { ref, computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useAuthStore } from '../stores/auth'
 
 const authStore = useAuthStore()
 const { isLoading, error } = storeToRefs(authStore)
 
+const displayName = ref('')
 const email = ref('')
 const password = ref('')
+const confirmPassword = ref('')
+const localError = ref('')
 
 onMounted(() => {
   authStore.error = null
 })
 
-const handleLogin = async () => {
+const combinedError = computed(() => localError.value || error.value)
+
+const handleRegister = async () => {
+  localError.value = ''
+  if (password.value !== confirmPassword.value) {
+    localError.value = '兩次輸入的密碼不一致'
+    return
+  }
   try {
-    await authStore.login(email.value, password.value)
+    await authStore.register({
+      email: email.value,
+      password: password.value,
+      displayName: displayName.value
+    })
   } catch (err) {
-    // error message handled by store state
+    // errors already surfaced through store
   }
 }
 </script>
@@ -32,11 +46,24 @@ const handleLogin = async () => {
         <div class="logo-icon-wrapper">
           <i class="ph ph-chat-teardrop-text logo-icon"></i>
         </div>
-        <h1>SimpleChat</h1>
-        <p>Your premium AI assistant</p>
+        <h1>Create Account</h1>
+        <p>Set up your SimpleChat workspace</p>
       </div>
       
-      <form @submit.prevent="handleLogin" class="login-form">
+      <form @submit.prevent="handleRegister" class="login-form">
+        <div class="form-group">
+          <label class="sr-only">Display Name</label>
+          <div class="input-icon-wrapper">
+            <i class="ph ph-user"></i>
+            <input 
+              type="text" 
+              v-model="displayName" 
+              placeholder="Your name" 
+              required 
+            />
+          </div>
+        </div>
+
         <div class="form-group">
           <label class="sr-only">Email</label>
           <div class="input-icon-wrapper">
@@ -57,24 +84,38 @@ const handleLogin = async () => {
             <input 
               type="password" 
               v-model="password" 
-              placeholder="••••••••" 
+              placeholder="至少 8 碼密碼" 
               required 
+              minlength="8"
+            />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="sr-only">Confirm Password</label>
+          <div class="input-icon-wrapper">
+            <i class="ph ph-lock-key"></i>
+            <input 
+              type="password" 
+              v-model="confirmPassword" 
+              placeholder="再次輸入密碼" 
+              required 
+              minlength="8"
             />
           </div>
         </div>
         
         <button type="submit" class="btn btn-primary btn-block" :disabled="isLoading">
-          <span v-if="!isLoading">Sign In</span>
-          <span v-else>Loading...</span>
+          <span v-if="!isLoading">Create Account</span>
+          <span v-else>Processing...</span>
         </button>
 
-        <p v-if="error" class="error-message">{{ error }}</p>
+        <p v-if="combinedError" class="error-message">{{ combinedError }}</p>
       </form>
       
       <div class="footer-links">
-        <a href="#" class="link">Forgot password?</a>
-        <span class="divider">•</span>
-        <RouterLink to="/register" class="link">Create account</RouterLink>
+        <span class="link">已有帳號？</span>
+        <RouterLink to="/login" class="link highlight">返回登入</RouterLink>
       </div>
     </div>
   </div>
@@ -117,7 +158,7 @@ const handleLogin = async () => {
 
 .login-card {
   width: 100%;
-  max-width: 400px;
+  max-width: 420px;
   padding: var(--space-8) var(--space-6);
   background: var(--glass-bg);
   backdrop-filter: var(--backdrop-blur);
@@ -187,7 +228,7 @@ input {
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid var(--border-subtle);
   padding: var(--space-3);
-  padding-left: var(--space-8); /* Space for icon */
+  padding-left: var(--space-8);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   transition: all var(--transition-fast);
@@ -208,7 +249,7 @@ input:focus {
 .footer-links {
   display: flex;
   justify-content: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   font-size: 0.9rem;
   color: var(--text-secondary);
 }
@@ -216,6 +257,11 @@ input:focus {
 .link {
   color: var(--text-secondary);
   transition: color var(--transition-fast);
+}
+
+.link.highlight {
+  color: var(--primary);
+  font-weight: 600;
 }
 
 .link:hover {

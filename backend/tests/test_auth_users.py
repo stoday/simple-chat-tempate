@@ -1,5 +1,6 @@
 import importlib
 import os
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +12,8 @@ def client(tmp_path, monkeypatch):
   db_path = tmp_path / "test_simplechat.db"
   monkeypatch.setenv("SECRET_KEY", "testsecret")
   monkeypatch.setenv("SIMPLECHAT_DB_PATH", str(db_path))
+  upload_root = tmp_path / "chat_uploads"
+  monkeypatch.setenv("CHAT_UPLOAD_ROOT", str(upload_root))
 
   import backend.database as database
   import backend.main as main
@@ -93,6 +96,34 @@ def test_full_user_flow(client: TestClient):
   resp = client.post("/api/auth/login", json={"email": "user@example.com", "password": "newpassword456"})
   assert resp.status_code == 200
   user_token = resp.json()["access_token"]
+  upload_root_env = Path(os.environ["CHAT_UPLOAD_ROOT"])
+
+  # User creates a message with attachment
+  data = {
+    "content": "Hello admin!",
+    "sender_type": "user",
+  }
+  files = [
+    ("files", ("hello.txt", b"Hello World", "text/plain"))
+  ]
+  resp = client.post("/api/messages", data=data, files=files, headers=auth_header(user_token))
+  assert resp.status_code == 200, resp.text
+  message = resp.json()
+  assert message["user_id"] == 2
+  assert len(message["files"]) == 1
+  saved_path = upload_root_env / message["files"][0]["file_path"]
+  assert saved_path.exists()
+
+  # User can list own messages
+  resp = client.get("/api/messages", headers=auth_header(user_token))
+  assert resp.status_code == 200
+  user_messages = resp.json()
+  assert len(user_messages) == 1
+
+  # Admin can read other users' messages
+  resp = client.get("/api/messages", params={"user_id": 2}, headers=auth_header(admin_token))
+  assert resp.status_code == 200
+  assert len(resp.json()) == 1
 
   # Admin cannot delete self
   resp = client.delete("/api/users/1", headers=auth_header(admin_token))

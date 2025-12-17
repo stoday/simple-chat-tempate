@@ -154,8 +154,8 @@ onMounted(() => {
           <i class="ph ph-user"></i>
         </div>
         <div class="user-info" v-if="!isSidebarCollapsed">
-          <span class="name">{{ user.name }}</span>
-          <span class="email">{{ user.plan }} Plan</span>
+          <span class="name">{{ user.displayName || user.email }}</span>
+          <span class="email">{{ user.email }} · {{ user.role }}</span>
         </div>
         <button class="icon-btn logout-btn" @click="handleLogout" title="Sign Out">
           <i class="ph ph-sign-out"></i>

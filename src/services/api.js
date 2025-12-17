@@ -2,7 +2,7 @@ import axios from 'axios'
 
 // Create an Axios instance with default config
 const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api', // Default to local backend if not set
+  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api', // Default to local FastAPI backend if not set
   headers: {
     'Content-Type': 'application/json',
     'Accept': 'application/json'

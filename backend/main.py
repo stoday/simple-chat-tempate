@@ -1,12 +1,14 @@
 import os
 import sqlite3
 from datetime import datetime, timedelta
-from typing import List, Optional
+from pathlib import Path
+from typing import Iterable, List, Optional, Union
+from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field
@@ -74,6 +76,28 @@ class DeleteResponse(BaseModel):
     detail: str
 
 
+class MessageFileResponse(BaseModel):
+    id: int
+    file_name: str
+    file_path: str
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+
+
+class MessageResponse(BaseModel):
+    id: int
+    user_id: int
+    sender_type: str
+    content: str
+    created_at: str
+    files: List[MessageFileResponse] = []
+
+
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_ROOT = Path(os.environ.get("CHAT_UPLOAD_ROOT", BASE_DIR / "chat_uploads"))
+UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+
+
 def normalize_email(email: str) -> str:
     return email.strip().lower()
 
@@ -115,6 +139,55 @@ def get_user_row_or_404(user_id: int, db: sqlite3.Connection) -> sqlite3.Row:
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return row
+
+
+def get_message_files(db: sqlite3.Connection, message_id: int) -> List[MessageFileResponse]:
+    rows = db.execute("SELECT * FROM message_file WHERE message_id = ?", (message_id,)).fetchall()
+    return [
+        MessageFileResponse(
+            id=row["id"],
+            file_name=row["file_name"],
+            file_path=row["file_path"],
+            mime_type=row["mime_type"],
+            size_bytes=row["size_bytes"],
+        )
+        for row in rows
+    ]
+
+
+def row_to_message(row: sqlite3.Row, files: Optional[List[MessageFileResponse]] = None) -> MessageResponse:
+    return MessageResponse(
+        id=row["id"],
+        user_id=row["user_id"],
+        sender_type=row["sender_type"],
+        content=row["content"],
+        created_at=row["created_at"],
+        files=files or [],
+    )
+
+
+def ensure_user_upload_dir(user_id: int) -> Path:
+    folder = UPLOAD_ROOT / f"user_{user_id}"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+async def persist_upload_file(upload_file: UploadFile, user_id: int) -> tuple[str, str, int]:
+    dest_dir = ensure_user_upload_dir(user_id)
+    safe_name = Path(upload_file.filename or "upload").name
+    unique_name = f"{uuid4().hex}_{safe_name}"
+    dest_path = dest_dir / unique_name
+    size = 0
+    with dest_path.open("wb") as buffer:
+        while True:
+            chunk = await upload_file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            buffer.write(chunk)
+    await upload_file.close()
+    relative_path = dest_path.relative_to(UPLOAD_ROOT).as_posix()
+    return safe_name, relative_path, size
 
 
 async def get_current_user(
@@ -263,3 +336,74 @@ def delete_user(
     db.execute("DELETE FROM user WHERE id = ?", (user_id,))
     db.commit()
     return DeleteResponse(detail="User deleted")
+
+
+@app.post("/api/messages", response_model=MessageResponse)
+async def create_message(
+    content: str = Form(...),
+    sender_type: str = Form("user"),
+    files: Union[UploadFile, List[UploadFile], None] = File(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> MessageResponse:
+    sender_type = sender_type.lower()
+    if sender_type not in {"user", "assistant"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid sender type")
+    if sender_type == "assistant" and current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admins can create assistant messages")
+
+    cursor = db.execute(
+        "INSERT INTO message (user_id, sender_type, content) VALUES (?, ?, ?)",
+        (current_user.id, sender_type, content),
+    )
+    message_id = cursor.lastrowid
+
+    upload_list: List[UploadFile] = []
+    if files is None:
+        upload_list = []
+    elif isinstance(files, (list, tuple, set)):
+        upload_list = [item for item in files if hasattr(item, "filename")]
+    elif isinstance(files, dict):
+        upload_list = [item for item in files.values() if hasattr(item, "filename")]
+    elif hasattr(files, "filename"):
+        upload_list = [files]  # treat single UploadFile-like object
+    elif isinstance(files, Iterable):
+        upload_list = [item for item in files if hasattr(item, "filename")]
+
+    saved_files: List[MessageFileResponse] = []
+    for upload_file in upload_list:
+        original_name, relative_path, size = await persist_upload_file(upload_file, current_user.id)
+        cursor = db.execute(
+            "INSERT INTO message_file (message_id, file_name, file_path, mime_type, size_bytes) VALUES (?, ?, ?, ?, ?)",
+            (message_id, original_name, relative_path, upload_file.content_type, size),
+        )
+        saved_files.append(
+            MessageFileResponse(
+                id=cursor.lastrowid,
+                file_name=original_name,
+                file_path=relative_path,
+                mime_type=upload_file.content_type,
+                size_bytes=size,
+            )
+        )
+
+    db.commit()
+    message_row = db.execute("SELECT * FROM message WHERE id = ?", (message_id,)).fetchone()
+    return row_to_message(message_row, saved_files)
+
+
+@app.get("/api/messages", response_model=List[MessageResponse])
+def list_messages(
+    user_id: Optional[int] = None,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> List[MessageResponse]:
+    target_user_id = user_id or current_user.id
+    if current_user.role != "admin" and target_user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    rows = db.execute(
+        "SELECT * FROM message WHERE user_id = ? ORDER BY created_at ASC",
+        (target_user_id,),
+    ).fetchall()
+    return [row_to_message(row, get_message_files(db, row["id"])) for row in rows]

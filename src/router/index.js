@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import ChatView from '../views/ChatView.vue'
 import LoginView from '../views/LoginView.vue'
+import RegisterView from '../views/RegisterView.vue'
 import { useAuthStore } from '../stores/auth'
 
 const routes = [
@@ -14,6 +15,12 @@ const routes = [
     path: '/login',
     name: 'Login',
     component: LoginView,
+    meta: { requiresAuth: false }
+  },
+  {
+    path: '/register',
+    name: 'Register',
+    component: RegisterView,
     meta: { requiresAuth: false }
   },
   {
@@ -32,7 +39,7 @@ router.beforeEach((to, from, next) => {
   
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     next('/login')
-  } else if (to.name === 'Login' && authStore.isAuthenticated) {
+  } else if ((to.name === 'Login' || to.name === 'Register') && authStore.isAuthenticated) {
     next('/')
   } else {
     next() // Proceed naturally
