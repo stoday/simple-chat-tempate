@@ -113,7 +113,12 @@ const handleRenameChat = (id) => {
   })
 }
 
-onMounted(() => {
+onMounted(async () => {
+  try {
+    await chatStore.loadMessages()
+  } catch (error) {
+    console.error('Failed to load messages', error)
+  }
   scrollToBottom()
 })
 </script>

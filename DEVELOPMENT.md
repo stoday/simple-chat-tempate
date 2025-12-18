@@ -102,14 +102,26 @@ if __name__ == '__main__':
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 開啟 `http://localhost:8000/docs` 可看到自動產生的 swagger UI。
+專案根目錄啟動（推薦：避免 `from .database` 匯入錯誤），命令要改用完整模組路徑：
+```powershell
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### 5.1 訊息 API 串接與後續 LLM TODO
+
+- `POST /api/messages` 現在同時接受文字（`content`）與多個附件（`files`）。檔案會儲存在 `backend/chat_uploads/` 下並透過 `app.mount('/chat_uploads', ...)` 對外提供靜態存取。
+- 後端在成功建立使用者訊息後，會呼叫 `backend/main.py` 內的 `build_simulated_reply()` 產生暫時回覆並存入資料庫。未來要串接大語言模型時，請在此函式中改為呼叫真正的 LLM（程式碼已在註解中標示 TODO）。
+- 前端則在 `src/stores/chat.js` 的 `sendMessage()` 以 `FormData` 將文字與檔案直接送到 `/api/messages`，並在拿到 `message`/`simulated_reply` 後更新 Pinia state。若日後要串接 LLM，可在這裡調整對回應欄位的處理（或增加流式更新）。
+- 歷史訊息會在 `chatStore.loadMessages()` 透過 `GET /api/messages` 取得，附件 URL 則由 `VITE_UPLOAD_BASE_URL` 組合（預設對應 `http://localhost:8000/chat_uploads`）。
 
 ### 6. 前端設定（Vite）
 
 在前端專案根目錄建立或修改 `.env`（或 `.env.development`）：
 ```
 VITE_API_BASE_URL=http://localhost:8000/api
+VITE_UPLOAD_BASE_URL=http://localhost:8000/chat_uploads
 ```
-前端的 `src/services/api.js` 會使用 `import.meta.env.VITE_API_BASE_URL` 作為基底 URL（已在專案中預設），因此設定該環境變數後，前端請求會導向 FastAPI。
+前端的 `src/services/api.js` 會使用 `import.meta.env.VITE_API_BASE_URL` 作為基底 URL（已在專案中預設），因此設定該環境變數後，前端請求會導向 FastAPI。`VITE_UPLOAD_BASE_URL` 則提供訊息附件的下載/預覽來源，預設與後端 `app.mount('/chat_uploads', ...)` 對應。
 
 提示（在 Windows PowerShell 啟動 dev server 時）:
 ```powershell

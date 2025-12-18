@@ -2,13 +2,14 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterable, List, Optional, Union
+from typing import List, Optional, Union
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field
@@ -93,9 +94,15 @@ class MessageResponse(BaseModel):
     files: List[MessageFileResponse] = []
 
 
+class MessageCreateResponse(BaseModel):
+    message: MessageResponse
+    simulated_reply: Optional[MessageResponse] = None
+
+
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_ROOT = Path(os.environ.get("CHAT_UPLOAD_ROOT", BASE_DIR / "chat_uploads"))
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+app.mount("/chat_uploads", StaticFiles(directory=str(UPLOAD_ROOT)), name="chat_uploads")
 
 
 def normalize_email(email: str) -> str:
@@ -188,6 +195,21 @@ async def persist_upload_file(upload_file: UploadFile, user_id: int) -> tuple[st
     await upload_file.close()
     relative_path = dest_path.relative_to(UPLOAD_ROOT).as_posix()
     return safe_name, relative_path, size
+
+
+def build_simulated_reply(content: str, files: List[MessageFileResponse]) -> str:
+    """Placeholder assistant response until an LLM is connected."""
+    text = content.strip() if content and content.strip() else "（無文字內容）"
+    lines = [f"接收到文字訊息：{text}"]
+    if files:
+        lines.append("接收到檔案：")
+        for file in files:
+            mime = file.mime_type or "未知類型"
+            lines.append(f"- {file.file_name}（{mime}）")
+    else:
+        lines.append("接收到檔案：無附件")
+    lines.append("（TODO：於此整合大語言模型回應）")
+    return "\n".join(lines)
 
 
 async def get_current_user(
@@ -338,11 +360,11 @@ def delete_user(
     return DeleteResponse(detail="User deleted")
 
 
-@app.post("/api/messages", response_model=MessageResponse)
+@app.post("/api/messages")
 async def create_message(
-    content: str = Form(...),
+    request: Request,
+    content: str = Form(""),
     sender_type: str = Form("user"),
-    files: Union[UploadFile, List[UploadFile], None] = File(default=None),
     db: sqlite3.Connection = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ) -> MessageResponse:
@@ -358,17 +380,9 @@ async def create_message(
     )
     message_id = cursor.lastrowid
 
-    upload_list: List[UploadFile] = []
-    if files is None:
-        upload_list = []
-    elif isinstance(files, (list, tuple, set)):
-        upload_list = [item for item in files if hasattr(item, "filename")]
-    elif isinstance(files, dict):
-        upload_list = [item for item in files.values() if hasattr(item, "filename")]
-    elif hasattr(files, "filename"):
-        upload_list = [files]  # treat single UploadFile-like object
-    elif isinstance(files, Iterable):
-        upload_list = [item for item in files if hasattr(item, "filename")]
+    form = await request.form()
+    raw_files = form.getlist("files") if hasattr(form, "getlist") else []
+    upload_list: List[UploadFile] = [file for file in raw_files if getattr(file, "filename", None)]
 
     saved_files: List[MessageFileResponse] = []
     for upload_file in upload_list:
@@ -387,14 +401,34 @@ async def create_message(
             )
         )
 
-    db.commit()
     message_row = db.execute("SELECT * FROM message WHERE id = ?", (message_id,)).fetchone()
-    return row_to_message(message_row, saved_files)
+    user_message = row_to_message(message_row, saved_files)
+
+    assistant_message: Optional[MessageResponse] = None
+    if sender_type == "user":
+        reply_text = build_simulated_reply(content, saved_files)
+        reply_cursor = db.execute(
+            "INSERT INTO message (user_id, sender_type, content) VALUES (?, ?, ?)",
+            (current_user.id, "assistant", reply_text),
+        )
+        reply_row = db.execute("SELECT * FROM message WHERE id = ?", (reply_cursor.lastrowid,)).fetchone()
+        assistant_message = row_to_message(reply_row, [])
+
+    db.commit()
+    user_message_dict = user_message.model_dump()
+    response_payload = {
+        **user_message_dict,
+        "message": user_message_dict,
+    }
+    if assistant_message is not None:
+        response_payload["simulated_reply"] = assistant_message.model_dump()
+    return response_payload
 
 
 @app.get("/api/messages", response_model=List[MessageResponse])
 def list_messages(
     user_id: Optional[int] = None,
+    include_assistant: bool = False,
     db: sqlite3.Connection = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ) -> List[MessageResponse]:
@@ -402,8 +436,11 @@ def list_messages(
     if current_user.role != "admin" and target_user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
-    rows = db.execute(
-        "SELECT * FROM message WHERE user_id = ? ORDER BY created_at ASC",
-        (target_user_id,),
-    ).fetchall()
+    sql = "SELECT * FROM message WHERE user_id = ?"
+    params: List[Union[int, str]] = [target_user_id]
+    if not include_assistant:
+        sql += " AND sender_type = ?"
+        params.append("user")
+    sql += " ORDER BY created_at ASC"
+    rows = db.execute(sql, tuple(params)).fetchall()
     return [row_to_message(row, get_message_files(db, row["id"])) for row in rows]
