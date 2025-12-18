@@ -37,10 +37,14 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAuthenticated = computed(() => Boolean(token.value))
 
-  const persistSession = (userData, jwt) => {
+  const setUserState = (userData) => {
     user.value = userData
-    token.value = jwt
     localStorage.setItem('user', JSON.stringify(userData))
+  }
+
+  const persistSession = (userData, jwt) => {
+    setUserState(userData)
+    token.value = jwt
     localStorage.setItem('auth_token', jwt)
   }
 
@@ -96,6 +100,12 @@ export const useAuthStore = defineStore('auth', () => {
     router.push('/login')
   }
 
+  const syncUserFromApi = (apiUser) => {
+    const formatted = formatUser(apiUser)
+    if (!formatted) return
+    setUserState(formatted)
+  }
+
   return {
     user,
     token,
@@ -104,6 +114,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated,
     login,
     register,
-    logout
+    logout,
+    syncUserFromApi
   }
 })

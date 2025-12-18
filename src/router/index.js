@@ -3,6 +3,7 @@ import ChatView from '../views/ChatView.vue'
 import LoginView from '../views/LoginView.vue'
 import RegisterView from '../views/RegisterView.vue'
 import { useAuthStore } from '../stores/auth'
+import SettingsView from '../views/SettingsView.vue'
 
 const routes = [
   {
@@ -22,6 +23,12 @@ const routes = [
     name: 'Register',
     component: RegisterView,
     meta: { requiresAuth: false }
+  },
+  {
+    path: '/settings',
+    name: 'Settings',
+    component: SettingsView,
+    meta: { requiresAuth: true }
   },
   {
     path: '/:pathMatch(.*)*',

@@ -6,7 +6,7 @@ from typing import List, Optional, Union
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile, status, Request
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -71,6 +71,7 @@ class UpdateUserRequest(BaseModel):
     display_name: Optional[str] = Field(default=None, max_length=120)
     role: Optional[str] = Field(default=None)
     password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+    email: Optional[EmailStr] = None
 
 
 class DeleteResponse(BaseModel):
@@ -321,6 +322,17 @@ def update_user(
         updates.append("display_name = ?")
         params.append(payload.display_name)
 
+    if payload.email is not None:
+        new_email = normalize_email(payload.email)
+        exists = db.execute(
+            "SELECT 1 FROM user WHERE email = ? AND id != ?",
+            (new_email, user_id),
+        ).fetchone()
+        if exists:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+        updates.append("email = ?")
+        params.append(new_email)
+
     if payload.password is not None:
         try:
             hashed = hash_password(payload.password)
@@ -363,12 +375,13 @@ def delete_user(
 @app.post("/api/messages")
 async def create_message(
     request: Request,
-    content: str = Form(""),
-    sender_type: str = Form("user"),
     db: sqlite3.Connection = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ) -> MessageResponse:
-    sender_type = sender_type.lower()
+    form = await request.form()
+    raw_content = form.get("content") or ""
+    sender_type = (form.get("sender_type") or "user").lower()
+    raw_files = form.getlist("files") if hasattr(form, "getlist") else []
     if sender_type not in {"user", "assistant"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid sender type")
     if sender_type == "assistant" and current_user.role != "admin":
@@ -376,12 +389,10 @@ async def create_message(
 
     cursor = db.execute(
         "INSERT INTO message (user_id, sender_type, content) VALUES (?, ?, ?)",
-        (current_user.id, sender_type, content),
+        (current_user.id, sender_type, raw_content),
     )
     message_id = cursor.lastrowid
 
-    form = await request.form()
-    raw_files = form.getlist("files") if hasattr(form, "getlist") else []
     upload_list: List[UploadFile] = [file for file in raw_files if getattr(file, "filename", None)]
 
     saved_files: List[MessageFileResponse] = []
@@ -406,7 +417,7 @@ async def create_message(
 
     assistant_message: Optional[MessageResponse] = None
     if sender_type == "user":
-        reply_text = build_simulated_reply(content, saved_files)
+        reply_text = build_simulated_reply(raw_content, saved_files)
         reply_cursor = db.execute(
             "INSERT INTO message (user_id, sender_type, content) VALUES (?, ?, ?)",
             (current_user.id, "assistant", reply_text),

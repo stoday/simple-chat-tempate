@@ -9,6 +9,8 @@ import './assets/css/variables.css'
 import './assets/css/base.css'
 import '@phosphor-icons/web/regular'; // Load Phosphor Icons
 
+window.__API_BASE__ = import.meta.env.VITE_API_BASE_URL
+
 const app = createApp(App)
 
 app.use(createPinia())

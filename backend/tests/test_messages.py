@@ -66,7 +66,6 @@ def test_multiple_file_message_persists_all_metadata(client: TestClient):
     payload = resp.json()
     stored_files = _fetch_rows("SELECT file_name FROM message_file WHERE message_id = ? ORDER BY id", (payload["id"],))
     simplified = [row["file_name"].split("_", 1)[-1] for row in stored_files]
-    breakpoint()
     assert simplified == ["a.txt", "b.txt"]
 
 

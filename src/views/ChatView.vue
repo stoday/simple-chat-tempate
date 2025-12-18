@@ -162,9 +162,16 @@ onMounted(async () => {
           <span class="name">{{ user.displayName || user.email }}</span>
           <span class="email">{{ user.email }} · {{ user.role }}</span>
         </div>
-        <button class="icon-btn logout-btn" @click="handleLogout" title="Sign Out">
-          <i class="ph ph-sign-out"></i>
-        </button>
+        <div class="user-actions">
+          <RouterLink class="icon-btn settings-btn" to="/settings" title="Settings">
+            <i class="ph ph-gear-six"></i>
+            <span v-if="!isSidebarCollapsed">Settings</span>
+          </RouterLink>
+          <button class="icon-btn logout-btn" @click="handleLogout" title="Sign Out">
+            <i class="ph ph-sign-out"></i>
+            <span v-if="!isSidebarCollapsed">Logout</span>
+          </button>
+        </div>
       </div>
     </aside>
 
@@ -316,7 +323,8 @@ onMounted(async () => {
   padding: var(--space-4);
   border-top: 1px solid var(--border-subtle);
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: var(--space-3);
   background: rgba(0,0,0,0.1);
 }
@@ -349,15 +357,54 @@ onMounted(async () => {
   font-size: 0.75rem;
 }
 
-.logout-btn {
-  background: transparent;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
+.user-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  align-items: stretch;
 }
 
-.logout-btn:hover {
-  color: var(--error);
+.sidebar.is-collapsed .user-actions {
+  align-items: center;
+}
+
+.user-actions .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: 0.35rem 0.5rem;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-decoration: none;
+  font-size: 0.85rem;
+  width: 100%;
+  justify-content: center;
+}
+
+.user-actions .settings-btn {
+  border-color: var(--border-subtle);
+}
+
+.user-actions .logout-btn {
+  border-color: transparent;
+}
+
+.sidebar.is-collapsed .user-actions {
+  gap: 0.25rem;
+}
+
+.sidebar.is-collapsed .user-actions .icon-btn {
+  width: auto;
+  justify-content: center;
+}
+
+.user-actions .logout-btn:hover,
+.user-actions .settings-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
 }
 
 /* Main Content */

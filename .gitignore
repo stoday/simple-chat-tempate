@@ -29,6 +29,8 @@ dist-ssr
 
 # python executables
 __pycache__/
+backend/__pycache__/
+*.pyc
 *.py[cod]
 *$py.class
 env/

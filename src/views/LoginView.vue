@@ -38,26 +38,32 @@ const handleLogin = async () => {
       
       <form @submit.prevent="handleLogin" class="login-form">
         <div class="form-group">
-          <label class="sr-only">Email</label>
+          <label class="sr-only" for="login-email">Email</label>
           <div class="input-icon-wrapper">
             <i class="ph ph-envelope"></i>
             <input 
+              id="login-email"
+              name="email"
               type="email" 
               v-model="email" 
               placeholder="name@example.com" 
+              autocomplete="email"
               required 
             />
           </div>
         </div>
         
         <div class="form-group">
-          <label class="sr-only">Password</label>
+          <label class="sr-only" for="login-password">Password</label>
           <div class="input-icon-wrapper">
             <i class="ph ph-lock-key"></i>
             <input 
+              id="login-password"
+              name="password"
               type="password" 
               v-model="password" 
-              placeholder="••••••••" 
+              placeholder="Enter your password" 
+              autocomplete="current-password"
               required 
             />
           </div>
