@@ -30,16 +30,34 @@ watch([currentMessages, isTyping], () => {
 }, { deep: true })
 
 const handleSend = async (payload) => {
-  // payload = { text: string, files: File[] }
-  await chatStore.sendMessage(payload.text, payload.files)
+  try {
+    await chatStore.sendMessage(payload.text, payload.files)
+  } catch (error) {
+    console.error('Failed to send message', error)
+    showInPageAlert(error?.response?.data?.detail || error.message || 'Failed to send message.')
+  }
 }
 
-const handleNewChat = () => {
-  chatStore.createNewChat()
+const handleNewChat = async () => {
+  try {
+    await chatStore.createNewChat()
+  } catch (error) {
+    console.error('Failed to create chat', error)
+    showInPageAlert(error?.response?.data?.detail || error.message || 'Failed to create chat.')
+  }
 }
 
 const handleLogout = () => {
   authStore.logout()
+}
+
+const handleSelectConversation = async (conversationId) => {
+  try {
+    await chatStore.selectConversation(conversationId)
+  } catch (error) {
+    console.error('Failed to load conversation', error)
+    showInPageAlert(error?.response?.data?.detail || error.message || 'Failed to open conversation.')
+  }
 }
 
 const testAlert = () => {
@@ -76,19 +94,22 @@ const showInPagePrompt = (message, defaultValue, callback) => {
   showModal.value = true
 }
 
-const handleModalOk = () => {
-  if (modalType.value === 'confirm' && modalCallback.value) {
-    modalCallback.value(true)
-  } else if (modalType.value === 'prompt' && modalCallback.value) {
-    modalCallback.value(modalInput.value)
+const handleModalOk = async () => {
+  try {
+    if (modalType.value === 'confirm' && modalCallback.value) {
+      await Promise.resolve(modalCallback.value(true))
+    } else if (modalType.value === 'prompt' && modalCallback.value) {
+      await Promise.resolve(modalCallback.value(modalInput.value))
+    }
+  } finally {
+    showModal.value = false
+    modalCallback.value = null
   }
-  showModal.value = false
-  modalCallback.value = null
 }
 
-const handleModalCancel = () => {
+const handleModalCancel = async () => {
   if (modalCallback.value) {
-    modalCallback.value(false)
+    await Promise.resolve(modalCallback.value(false))
   }
   showModal.value = false
   modalCallback.value = null
@@ -96,9 +117,13 @@ const handleModalCancel = () => {
 
 const handleDeleteChat = (id) => {
   console.log('Parent received delete for:', id)
-  showInPageConfirm('Are you sure you want to delete this chat?', (confirmed) => {
-    if (confirmed) {
-      chatStore.deleteConversation(id)
+  showInPageConfirm('Are you sure you want to delete this chat?', async (confirmed) => {
+    if (!confirmed) return
+    try {
+      await chatStore.deleteConversation(id)
+    } catch (error) {
+      console.error('Failed to delete chat', error)
+      showInPageAlert(error?.response?.data?.detail || error.message || 'Failed to delete chat.')
     }
   })
 }
@@ -106,18 +131,24 @@ const handleDeleteChat = (id) => {
 const handleRenameChat = (id) => {
   console.log('Parent received rename for:', id)
   const currentTitle = conversations.value.find(c => c.id === id)?.title
-  showInPagePrompt('Rename Chat:', currentTitle, (newTitle) => {
+  showInPagePrompt('Rename Chat:', currentTitle, async (newTitle) => {
     if (newTitle && newTitle.trim()) {
-      chatStore.renameConversation(id, newTitle.trim())
+      try {
+        await chatStore.renameConversation(id, newTitle.trim())
+      } catch (error) {
+        console.error('Failed to rename chat', error)
+        showInPageAlert(error?.response?.data?.detail || error.message || 'Failed to rename chat.')
+      }
     }
   })
 }
 
 onMounted(async () => {
   try {
-    await chatStore.loadMessages()
+    await chatStore.initialize()
   } catch (error) {
-    console.error('Failed to load messages', error)
+    console.error('Failed to initialize chat state', error)
+    showInPageAlert(error?.response?.data?.detail || error.message || 'Failed to load conversations.')
   }
   scrollToBottom()
 })
@@ -148,7 +179,7 @@ onMounted(async () => {
           :title="item.title" 
           :active="item.active"
           :collapsed="isSidebarCollapsed"
-          @select="chatStore.selectConversation(item.id)"
+          @select="() => handleSelectConversation(item.id)"
           :on-delete="() => handleDeleteChat(item.id)"
           :on-rename="() => handleRenameChat(item.id)" 
         />

@@ -78,6 +78,23 @@ class DeleteResponse(BaseModel):
     detail: str
 
 
+class ConversationResponse(BaseModel):
+    id: int
+    user_id: int
+    title: str
+    created_at: str
+    updated_at: str
+    message_count: Optional[int] = None
+
+
+class ConversationCreateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=200)
+
+
+class ConversationUpdateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=200)
+
+
 class MessageFileResponse(BaseModel):
     id: int
     file_name: str
@@ -89,10 +106,11 @@ class MessageFileResponse(BaseModel):
 class MessageResponse(BaseModel):
     id: int
     user_id: int
+    conversation_id: Optional[int] = None
     sender_type: str
     content: str
     created_at: str
-    files: List[MessageFileResponse] = []
+    files: List[MessageFileResponse] = Field(default_factory=list)
 
 
 class MessageCreateResponse(BaseModel):
@@ -149,6 +167,20 @@ def get_user_row_or_404(user_id: int, db: sqlite3.Connection) -> sqlite3.Row:
     return row
 
 
+def row_to_conversation(row: sqlite3.Row) -> ConversationResponse:
+    message_count = None
+    if "message_count" in row.keys():
+        message_count = row["message_count"]
+    return ConversationResponse(
+        id=row["id"],
+        user_id=row["user_id"],
+        title=row["title"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        message_count=message_count,
+    )
+
+
 def get_message_files(db: sqlite3.Connection, message_id: int) -> List[MessageFileResponse]:
     rows = db.execute("SELECT * FROM message_file WHERE message_id = ?", (message_id,)).fetchall()
     return [
@@ -167,6 +199,7 @@ def row_to_message(row: sqlite3.Row, files: Optional[List[MessageFileResponse]] 
     return MessageResponse(
         id=row["id"],
         user_id=row["user_id"],
+        conversation_id=row["conversation_id"],
         sender_type=row["sender_type"],
         content=row["content"],
         created_at=row["created_at"],
@@ -178,6 +211,49 @@ def ensure_user_upload_dir(user_id: int) -> Path:
     folder = UPLOAD_ROOT / f"user_{user_id}"
     folder.mkdir(parents=True, exist_ok=True)
     return folder
+
+
+def get_conversation_or_404(conversation_id: int, db: sqlite3.Connection) -> sqlite3.Row:
+    row = db.execute("SELECT * FROM conversation WHERE id = ?", (conversation_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return row
+
+
+def ensure_default_conversation(db: sqlite3.Connection, user_id: int) -> sqlite3.Row:
+    row = (
+        db.execute(
+            "SELECT * FROM conversation WHERE user_id = ? ORDER BY updated_at DESC, id ASC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    )
+    if row:
+        return row
+    cursor = db.execute(
+        "INSERT INTO conversation (user_id, title) VALUES (?, ?)",
+        (user_id, "New Chat"),
+    )
+    db.commit()
+    return get_conversation_or_404(cursor.lastrowid, db)
+
+
+def create_conversation_for_user(
+    db: sqlite3.Connection, user_id: int, title: Optional[str] = None
+) -> sqlite3.Row:
+    final_title = (title or "New Chat").strip() or "New Chat"
+    cursor = db.execute(
+        "INSERT INTO conversation (user_id, title) VALUES (?, ?)",
+        (user_id, final_title),
+    )
+    db.commit()
+    return get_conversation_or_404(cursor.lastrowid, db)
+
+
+def touch_conversation(db: sqlite3.Connection, conversation_id: int) -> None:
+    db.execute(
+        "UPDATE conversation SET updated_at = datetime('now') WHERE id = ?",
+        (conversation_id,),
+    )
 
 
 async def persist_upload_file(upload_file: UploadFile, user_id: int) -> tuple[str, str, int]:
@@ -200,16 +276,16 @@ async def persist_upload_file(upload_file: UploadFile, user_id: int) -> tuple[st
 
 def build_simulated_reply(content: str, files: List[MessageFileResponse]) -> str:
     """Placeholder assistant response until an LLM is connected."""
-    text = content.strip() if content and content.strip() else "（無文字內容）"
-    lines = [f"接收到文字訊息：{text}"]
+    text = content.strip() if content and content.strip() else "(no text provided)"
+    lines = [f"Assistant received text message: {text}"]
     if files:
-        lines.append("接收到檔案：")
+        lines.append("Assistant received files:")
         for file in files:
-            mime = file.mime_type or "未知類型"
-            lines.append(f"- {file.file_name}（{mime}）")
+            mime = file.mime_type or "unknown type"
+            lines.append(f"- {file.file_name} ({mime})")
     else:
-        lines.append("接收到檔案：無附件")
-    lines.append("（TODO：於此整合大語言模型回應）")
+        lines.append("Assistant did not receive any files.")
+    lines.append("(TODO: integrate large language model response here)")
     return "\n".join(lines)
 
 
@@ -259,6 +335,7 @@ def register_user(payload: RegisterRequest, db: sqlite3.Connection = Depends(get
     )
     db.commit()
     new_user = db.execute("SELECT * FROM user WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    create_conversation_for_user(db, new_user["id"], (payload.display_name or "New Chat"))
     return row_to_user(new_user)
 
 
@@ -372,6 +449,89 @@ def delete_user(
     return DeleteResponse(detail="User deleted")
 
 
+@app.get("/api/conversations", response_model=List[ConversationResponse])
+def list_conversations(
+    user_id: Optional[int] = None,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> List[ConversationResponse]:
+    target_user_id = user_id or current_user.id
+    if current_user.role != "admin" and target_user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    rows = db.execute(
+        """
+        SELECT c.*, (
+            SELECT COUNT(*) FROM message m WHERE m.conversation_id = c.id
+        ) AS message_count
+        FROM conversation c
+        WHERE c.user_id = ?
+        ORDER BY c.updated_at DESC, c.id DESC
+        """,
+        (target_user_id,),
+    ).fetchall()
+    if not rows and target_user_id == current_user.id:
+        default_row = create_conversation_for_user(db, current_user.id, "New Chat")
+        rows = [
+            db.execute(
+                "SELECT c.*, 0 AS message_count FROM conversation c WHERE id = ?",
+                (default_row["id"],),
+            ).fetchone()
+        ]
+    return [row_to_conversation(row) for row in rows]
+
+
+@app.post("/api/conversations", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
+def create_conversation(
+    payload: ConversationCreateRequest,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> ConversationResponse:
+    row = create_conversation_for_user(db, current_user.id, payload.title)
+    return row_to_conversation(row)
+
+
+@app.patch("/api/conversations/{conversation_id}", response_model=ConversationResponse)
+def update_conversation(
+    conversation_id: int,
+    payload: ConversationUpdateRequest,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> ConversationResponse:
+    conversation = get_conversation_or_404(conversation_id, db)
+    if current_user.role != "admin" and conversation["user_id"] != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    updates = []
+    params: List[object] = []
+    if payload.title is not None:
+        updated_title = payload.title.strip() or "New Chat"
+        updates.append("title = ?")
+        params.append(updated_title)
+    if not updates:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
+    params.append(conversation_id)
+    db.execute(
+        f"UPDATE conversation SET {', '.join(updates)}, updated_at = datetime('now') WHERE id = ?",
+        params,
+    )
+    db.commit()
+    updated = get_conversation_or_404(conversation_id, db)
+    return row_to_conversation(updated)
+
+
+@app.delete("/api/conversations/{conversation_id}", response_model=DeleteResponse)
+def delete_conversation(
+    conversation_id: int,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> DeleteResponse:
+    conversation = get_conversation_or_404(conversation_id, db)
+    if current_user.role != "admin" and conversation["user_id"] != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    db.execute("DELETE FROM conversation WHERE id = ?", (conversation_id,))
+    db.commit()
+    return DeleteResponse(detail="Conversation deleted")
+
+
 @app.post("/api/messages")
 async def create_message(
     request: Request,
@@ -381,23 +541,41 @@ async def create_message(
     form = await request.form()
     raw_content = form.get("content") or ""
     sender_type = (form.get("sender_type") or "user").lower()
-    raw_files = form.getlist("files") if hasattr(form, "getlist") else []
     if sender_type not in {"user", "assistant"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid sender type")
     if sender_type == "assistant" and current_user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admins can create assistant messages")
 
+    raw_conversation_id = form.get("conversation_id")
+    conversation_row: Optional[sqlite3.Row]
+    if raw_conversation_id is not None:
+        try:
+            conversation_id = int(raw_conversation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid conversation id") from exc
+        conversation_row = get_conversation_or_404(conversation_id, db)
+    else:
+        if sender_type == "assistant" and current_user.role == "admin":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="conversation_id is required")
+        conversation_row = ensure_default_conversation(db, current_user.id)
+
+    if current_user.role != "admin" and conversation_row["user_id"] != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to conversation")
+
+    owner_user_id = conversation_row["user_id"]
+
     cursor = db.execute(
-        "INSERT INTO message (user_id, sender_type, content) VALUES (?, ?, ?)",
-        (current_user.id, sender_type, raw_content),
+        "INSERT INTO message (user_id, sender_type, content, conversation_id) VALUES (?, ?, ?, ?)",
+        (owner_user_id, sender_type, raw_content, conversation_row["id"]),
     )
     message_id = cursor.lastrowid
 
+    raw_files = form.getlist("files") if hasattr(form, "getlist") else []
     upload_list: List[UploadFile] = [file for file in raw_files if getattr(file, "filename", None)]
 
     saved_files: List[MessageFileResponse] = []
     for upload_file in upload_list:
-        original_name, relative_path, size = await persist_upload_file(upload_file, current_user.id)
+        original_name, relative_path, size = await persist_upload_file(upload_file, owner_user_id)
         cursor = db.execute(
             "INSERT INTO message_file (message_id, file_name, file_path, mime_type, size_bytes) VALUES (?, ?, ?, ?, ?)",
             (message_id, original_name, relative_path, upload_file.content_type, size),
@@ -414,16 +592,18 @@ async def create_message(
 
     message_row = db.execute("SELECT * FROM message WHERE id = ?", (message_id,)).fetchone()
     user_message = row_to_message(message_row, saved_files)
+    touch_conversation(db, conversation_row["id"])
 
     assistant_message: Optional[MessageResponse] = None
     if sender_type == "user":
         reply_text = build_simulated_reply(raw_content, saved_files)
         reply_cursor = db.execute(
-            "INSERT INTO message (user_id, sender_type, content) VALUES (?, ?, ?)",
-            (current_user.id, "assistant", reply_text),
+            "INSERT INTO message (user_id, sender_type, content, conversation_id) VALUES (?, ?, ?, ?)",
+            (owner_user_id, "assistant", reply_text, conversation_row["id"]),
         )
         reply_row = db.execute("SELECT * FROM message WHERE id = ?", (reply_cursor.lastrowid,)).fetchone()
         assistant_message = row_to_message(reply_row, [])
+        touch_conversation(db, conversation_row["id"])
 
     db.commit()
     user_message_dict = user_message.model_dump()
@@ -439,6 +619,7 @@ async def create_message(
 @app.get("/api/messages", response_model=List[MessageResponse])
 def list_messages(
     user_id: Optional[int] = None,
+    conversation_id: Optional[int] = None,
     include_assistant: bool = False,
     db: sqlite3.Connection = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
@@ -447,8 +628,25 @@ def list_messages(
     if current_user.role != "admin" and target_user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
-    sql = "SELECT * FROM message WHERE user_id = ?"
-    params: List[Union[int, str]] = [target_user_id]
+    base_conversation: Optional[sqlite3.Row] = None
+    if conversation_id is not None:
+        base_conversation = get_conversation_or_404(conversation_id, db)
+    else:
+        base_conversation = (
+            db.execute(
+                "SELECT * FROM conversation WHERE user_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
+                (target_user_id,),
+            ).fetchone()
+        )
+
+    if base_conversation is None:
+        return []
+
+    if current_user.role != "admin" and base_conversation["user_id"] != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    sql = "SELECT * FROM message WHERE conversation_id = ?"
+    params: List[Union[int, str]] = [base_conversation["id"]]
     if not include_assistant:
         sql += " AND sender_type = ?"
         params.append("user")

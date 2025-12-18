@@ -247,7 +247,7 @@ const deleteUser = async (user) => {
                 <input type="text" v-model="editForm.displayName" />
               </div>
               <div v-else>
-                {{ user.display_name || user.displayName || '—' }}
+                {{ user.display_name || user.displayName || 'Unnamed' }}
               </div>
             </td>
             <td>

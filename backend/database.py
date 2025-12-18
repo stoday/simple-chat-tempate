@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Generator
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_DB = BASE_DIR / 'simplechat.db'
+DEFAULT_DB = BASE_DIR / "simplechat.db"
 DB_PATH = Path(os.environ.get("SIMPLECHAT_DB_PATH", DEFAULT_DB))
 
 USER_TABLE_SQL = """
@@ -19,14 +19,27 @@ CREATE TABLE IF NOT EXISTS user (
 );
 """
 
+CONVERSATION_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS conversation (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL DEFAULT 'New Chat',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(user_id) REFERENCES user(id) ON DELETE CASCADE
+);
+"""
+
 MESSAGE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS message (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     sender_type TEXT NOT NULL CHECK(sender_type IN ('user','assistant')),
     content TEXT NOT NULL,
+    conversation_id INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY(user_id) REFERENCES user(id) ON DELETE CASCADE
+    -- conversation foreign key added separately for backward compatibility
 );
 """
 
@@ -50,9 +63,18 @@ def init_db() -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute(USER_TABLE_SQL)
+        conn.execute(CONVERSATION_TABLE_SQL)
         conn.execute(MESSAGE_TABLE_SQL)
         conn.execute(MESSAGE_FILE_TABLE_SQL)
+        ensure_message_conversation_column(conn)
         conn.commit()
+
+
+def ensure_message_conversation_column(conn: sqlite3.Connection) -> None:
+    info = conn.execute("PRAGMA table_info(message)").fetchall()
+    has_column = any(row[1] == "conversation_id" for row in info)
+    if not has_column:
+        conn.execute("ALTER TABLE message ADD COLUMN conversation_id INTEGER")
 
 
 def get_connection() -> sqlite3.Connection:
