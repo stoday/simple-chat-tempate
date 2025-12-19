@@ -52,8 +52,10 @@ def test_text_message_and_reply_persist(client: TestClient):
     assert rows[0]["sender_type"] == "user"
     assert rows[0]["content"] == "Hi there"
     assert rows[1]["sender_type"] == "assistant"
-    assert "Assistant received text message: Hi there" in rows[1]["content"]
-    assert "Assistant did not receive any files." in rows[1]["content"]
+    assert "收到的文字訊息: Hi there" in rows[1]["content"]
+    assert "未收到檔案訊息。" in rows[1]["content"]
+    assert "下載連結:" in rows[1]["content"]
+    assert "/chat_uploads/" in rows[1]["content"]
 
 
 def test_single_file_message_persists_metadata(client: TestClient):
@@ -132,6 +134,35 @@ def test_message_listing_for_user_and_admin(client: TestClient):
     admin_messages = resp.json()
     assert len(admin_messages) == 2
     assert any(msg["sender_type"] == "assistant" for msg in admin_messages)
+
+
+def test_assistant_reply_generates_downloadable_file(client: TestClient):
+    _, user, _, user_token = bootstrap_admin_and_user(client)
+    conversation_id = create_conversation(client, user_token, "Assistant Files")
+    resp = client.post(
+        "/api/messages",
+        data={"content": "Generate a file", "conversation_id": str(conversation_id)},
+        headers=auth_header(user_token),
+    )
+    assert resp.status_code == 200, resp.text
+    assistant_id = resp.json()["simulated_reply"]["id"]
+    wait_for_status(assistant_id, "completed")
+
+    resp = client.get(
+        "/api/messages",
+        params={"conversation_id": conversation_id, "include_assistant": True},
+        headers=auth_header(user_token),
+    )
+    assert resp.status_code == 200
+    assistant_messages = [msg for msg in resp.json() if msg["sender_type"] == "assistant"]
+    assert len(assistant_messages) == 1
+    assistant_message = assistant_messages[0]
+    assert assistant_message["files"]
+    assert "/chat_uploads/" in assistant_message["content"]
+
+    upload_root = Path(os.environ["CHAT_UPLOAD_ROOT"])
+    saved_path = upload_root / assistant_message["files"][0]["file_path"]
+    assert saved_path.exists()
 
 
 def test_file_only_message_with_no_text_persists(client: TestClient):

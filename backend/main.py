@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Union
@@ -104,6 +105,15 @@ class MessageFileResponse(BaseModel):
     size_bytes: Optional[int] = None
 
 
+@dataclass
+class AssistantGeneratedFile:
+    file_name: str
+    content: Optional[bytes] = None
+    text: Optional[str] = None
+    mime_type: Optional[str] = None
+    source_path: Optional[str] = None
+
+
 class MessageResponse(BaseModel):
     id: int
     user_id: int
@@ -127,6 +137,7 @@ UPLOAD_ROOT = Path(os.environ.get("CHAT_UPLOAD_ROOT", BASE_DIR / "chat_uploads")
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 app.mount("/chat_uploads", StaticFiles(directory=str(UPLOAD_ROOT)), name="chat_uploads")
 SIMULATED_REPLY_DELAY = float(os.environ.get("SIMULATED_REPLY_DELAY", "1.5"))
+DOWNLOAD_LINKS_PLACEHOLDER = "__DOWNLOAD_LINKS__"
 pending_generations: Dict[int, asyncio.Task] = {}
 
 
@@ -295,36 +306,128 @@ async def persist_upload_file(upload_file: UploadFile, user_id: int, display_nam
     return safe_name, relative_path, size
 
 
-def build_simulated_reply(content: str, files: List[MessageFileResponse]) -> str:
+def persist_assistant_files(
+    db: sqlite3.Connection,
+    message_id: int,
+    user_id: int,
+    display_name: Optional[str],
+    generated_files: List[AssistantGeneratedFile],
+) -> List[MessageFileResponse]:
+    if not generated_files:
+        return []
+    dest_dir = ensure_user_upload_dir(user_id, display_name)
+    saved_files: List[MessageFileResponse] = []
+    for generated_file in generated_files:
+        raw_name = generated_file.file_name or "assistant_file"
+        safe_name = Path(raw_name).name
+        unique_name = f"{uuid4().hex}_{safe_name}"
+        dest_path = dest_dir / unique_name
+        if generated_file.source_path:
+            source_path = Path(generated_file.source_path)
+            if not source_path.is_absolute():
+                source_path = UPLOAD_ROOT / source_path
+            dest_path.write_bytes(source_path.read_bytes())
+        else:
+            payload: bytes
+            if generated_file.content is not None:
+                payload = generated_file.content
+            else:
+                payload = (generated_file.text or "").encode("utf-8")
+            dest_path.write_bytes(payload)
+        size = dest_path.stat().st_size
+        relative_path = dest_path.relative_to(UPLOAD_ROOT).as_posix()
+        cursor = db.execute(
+            "INSERT INTO message_file (message_id, file_name, file_path, mime_type, size_bytes) VALUES (?, ?, ?, ?, ?)",
+            (message_id, safe_name, relative_path, generated_file.mime_type, size),
+        )
+        saved_files.append(
+            MessageFileResponse(
+                id=cursor.lastrowid,
+                file_name=safe_name,
+                file_path=relative_path,
+                mime_type=generated_file.mime_type,
+                size_bytes=size,
+            )
+        )
+    return saved_files
+
+
+def build_simulated_reply(
+    content: str, files: List[MessageFileResponse]
+) -> Union[str, tuple[str, List[AssistantGeneratedFile]]]:
     """Placeholder assistant response until an LLM is connected."""
     text = content.strip() if content and content.strip() else "(no text provided)"
-    lines = [f"Assistant received text message: {text}"]
+    lines = [f"收到的文字訊息: {text}"]
     if files:
-        lines.append("Assistant received files:")
+        lines.append("收到的檔案訊息:")
         for file in files:
             mime = file.mime_type or "unknown type"
             lines.append(f"- {file.file_name} ({mime})")
     else:
-        lines.append("Assistant did not receive any files.")
-    lines.append("(TODO: integrate large language model response here)")
-    return "\n".join(lines)
+        lines.append("未收到檔案訊息。")
+
+    files_summary = "\n".join(f"- {file.file_name}" for file in files) if files else "- (none)"
+    generated_files = [
+        AssistantGeneratedFile(
+            file_name="assistant_reply.txt",
+            text=f"Echo: {text}\nReceived files:\n{files_summary}\n",
+            mime_type="text/plain",
+        )
+    ]
+
+    lines.append("可供下載的檔案:")
+    for generated in generated_files:
+        lines.append(f"- {generated.file_name}")
+    lines.append("下載連結:")
+    lines.append(DOWNLOAD_LINKS_PLACEHOLDER)
+    return "\n".join(lines), generated_files
 
 
-def schedule_assistant_reply(message_id: int, conversation_id: int, content: str, files: List[MessageFileResponse]) -> None:
+def schedule_assistant_reply(
+    message_id: int,
+    conversation_id: int,
+    content: str,
+    files: List[MessageFileResponse],
+    owner_user_id: int,
+    owner_display_name: Optional[str],
+) -> None:
     loop = asyncio.get_running_loop()
-    task = loop.create_task(run_assistant_reply(message_id, conversation_id, content, files))
+    task = loop.create_task(
+        run_assistant_reply(message_id, conversation_id, content, files, owner_user_id, owner_display_name)
+    )
     pending_generations[message_id] = task
 
 
-async def run_assistant_reply(message_id: int, conversation_id: int, content: str, files: List[MessageFileResponse]) -> None:
+async def run_assistant_reply(
+    message_id: int,
+    conversation_id: int,
+    content: str,
+    files: List[MessageFileResponse],
+    owner_user_id: int,
+    owner_display_name: Optional[str],
+) -> None:
     try:
         await asyncio.sleep(SIMULATED_REPLY_DELAY)
-        reply_text = build_simulated_reply(content, files)
+        reply_payload = build_simulated_reply(content, files)
+        if isinstance(reply_payload, tuple):
+            reply_text, generated_files = reply_payload
+        else:
+            reply_text, generated_files = reply_payload, []
         conn = get_connection()
         try:
+            saved_files = persist_assistant_files(conn, message_id, owner_user_id, owner_display_name, generated_files)
+            final_text = reply_text
+            if saved_files:
+                link_lines = [f"- /chat_uploads/{file.file_path}" for file in saved_files]
+                if DOWNLOAD_LINKS_PLACEHOLDER in final_text:
+                    final_text = final_text.replace(DOWNLOAD_LINKS_PLACEHOLDER, "\n".join(link_lines))
+                else:
+                    final_text = f"{final_text}\n下載連結:\n" + "\n".join(link_lines)
+            else:
+                final_text = final_text.replace(f"\n{DOWNLOAD_LINKS_PLACEHOLDER}", "")
             conn.execute(
                 "UPDATE message SET content = ?, status = 'completed', stopped_at = NULL WHERE id = ?",
-                (reply_text, message_id),
+                (final_text, message_id),
             )
             conn.execute("UPDATE conversation SET updated_at = datetime('now') WHERE id = ?", (conversation_id,))
             conn.commit()
@@ -650,13 +753,30 @@ async def create_message(
 
     assistant_message: Optional[MessageResponse] = None
     if sender_type == "user":
+        owner_display_name = None
+        if conversation_owner_id == current_user.id:
+            owner_display_name = current_user.display_name
+        else:
+            owner_row = db.execute(
+                "SELECT display_name FROM user WHERE id = ?",
+                (conversation_owner_id,),
+            ).fetchone()
+            if owner_row:
+                owner_display_name = owner_row["display_name"]
         reply_cursor = db.execute(
             "INSERT INTO message (user_id, sender_type, content, conversation_id, status, parent_message_id) VALUES (?, ?, ?, ?, ?, ?)",
             (conversation_owner_id, "assistant", "", conversation_row["id"], "pending", message_id),
         )
         pending_row = db.execute("SELECT * FROM message WHERE id = ?", (reply_cursor.lastrowid,)).fetchone()
         assistant_message = row_to_message(pending_row, [])
-        schedule_assistant_reply(pending_row["id"], conversation_row["id"], raw_content, saved_files)
+        schedule_assistant_reply(
+            pending_row["id"],
+            conversation_row["id"],
+            raw_content,
+            saved_files,
+            conversation_owner_id,
+            owner_display_name,
+        )
     elif sender_type == "assistant":
         db.execute(
             "UPDATE message SET status = 'completed' WHERE id = ?",
