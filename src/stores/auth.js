@@ -24,6 +24,8 @@ const formatUser = (raw) => {
   }
 }
 
+const FORCE_NEW_CHAT_KEY = 'force_new_chat_on_login'
+
 const loadStoredUser = () => {
   const stored = safeParse(localStorage.getItem('user'))
   return formatUser(stored)
@@ -66,6 +68,7 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null
     try {
       await performLoginRequest(email, password)
+      localStorage.setItem(FORCE_NEW_CHAT_KEY, '1')
       router.push('/')
     } catch (err) {
       error.value = err?.response?.data?.detail || err.message || 'Login failed'
@@ -85,6 +88,7 @@ export const useAuthStore = defineStore('auth', () => {
         display_name: displayName
       })
       await performLoginRequest(email, password)
+      localStorage.setItem(FORCE_NEW_CHAT_KEY, '1')
       router.push('/')
     } catch (err) {
       error.value = err?.response?.data?.detail || err.message || 'Registration failed'

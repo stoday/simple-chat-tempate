@@ -38,6 +38,8 @@ const formatConversationFromApi = (conversation) => ({
   active: false
 })
 
+const FORCE_NEW_CHAT_KEY = 'force_new_chat_on_login'
+
 export const useChatStore = defineStore('chat', () => {
   let activeUploadController = null
   const conversations = ref([])
@@ -191,7 +193,14 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   const initialize = async () => {
-    await loadConversations()
+    const forceNewChat = typeof window !== 'undefined' && localStorage.getItem(FORCE_NEW_CHAT_KEY) === '1'
+    if (forceNewChat) {
+      localStorage.removeItem(FORCE_NEW_CHAT_KEY)
+      await createNewChat()
+      await loadConversations()
+    } else {
+      await loadConversations()
+    }
     if (activeChatId.value) {
       await loadMessages(activeChatId.value, { includeAssistant: true })
     }
