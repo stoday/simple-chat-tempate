@@ -53,8 +53,12 @@ backend/
 |--------------|-----------------------------------------------------------------|------|
 | `id`         | `INTEGER PRIMARY KEY AUTOINCREMENT`                             | 訊息唯一 ID |
 | `user_id`    | `INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE`        | 訊息所屬使用者 |
+| `conversation_id` | `INTEGER NOT NULL`                                        | 所屬對話 |
 | `sender_type`| `TEXT NOT NULL CHECK(sender_type IN ('user','assistant'))`      | 訊息來源角色 |
 | `content`    | `TEXT NOT NULL`                                                 | 文字內容 |
+| `status`     | `TEXT NOT NULL DEFAULT 'completed'`                             | `pending/completed/cancelled`，用於記錄助手回覆是否仍在生成或已被中止 |
+| `parent_message_id` | `INTEGER`                                                | 助手訊息對應的使用者訊息 ID |
+| `stopped_at` | `TEXT`                                                          | 中止時間（若 `status='cancelled'`） |
 | `created_at` | `TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP`                       | 建立時間 |
 
 ## message_file 表

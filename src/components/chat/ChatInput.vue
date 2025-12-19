@@ -1,14 +1,33 @@
 ﻿<script setup>
 import { ref, computed, nextTick, watch, onMounted } from 'vue'
 
-const emit = defineEmits(['send', 'attach'])
+const props = defineProps({
+  canStop: {
+    type: Boolean,
+    default: false
+  },
+  isUploading: {
+    type: Boolean,
+    default: false
+  },
+  uploadProgress: {
+    type: Number,
+    default: 0
+  }
+})
+const emit = defineEmits(['send', 'attach', 'stop', 'cancel-upload'])
 const prompt = ref('')
 const textareaRef = ref(null)
 const fileInputRef = ref(null)
 const selectedFiles = ref([])
 const isDragging = ref(false)
 
-const canSend = computed(() => prompt.value.trim().length > 0 || selectedFiles.value.length > 0)
+const showStopButton = computed(() => !!props.canStop)
+const isUploading = computed(() => !!props.isUploading)
+const canSend = computed(
+  () => !showStopButton.value && !isUploading.value && (prompt.value.trim().length > 0 || selectedFiles.value.length > 0)
+)
+const roundedUploadProgress = computed(() => Math.min(100, Math.max(0, Math.round(props.uploadProgress))))
 
 const updateTextareaHeight = (textarea) => {
   if (!textarea) return
@@ -51,11 +70,10 @@ const handleSend = async () => {
     text: prompt.value,
     files: filesToSend
   })
+}
 
-  prompt.value = ''
-  selectedFiles.value = []
-  await nextTick()
-  resetHeight()
+const handleStop = () => {
+  emit('stop')
 }
 
 const handleKeydown = (e) => {
@@ -100,6 +118,21 @@ const handleDrop = (e) => {
     selectedFiles.value.push(...files)
   }
 }
+
+const handleCancelUpload = () => {
+  emit('cancel-upload')
+}
+
+const resetInput = async () => {
+  prompt.value = ''
+  selectedFiles.value = []
+  await nextTick()
+  resetHeight()
+}
+
+defineExpose({
+  resetInput
+})
 </script>
 
 <template>
@@ -152,6 +185,18 @@ const handleDrop = (e) => {
             </button>
           </div>
         </div>
+        <div v-if="isUploading" class="upload-progress">
+          <div class="upload-progress__label">
+            <i class="ph ph-arrow-up"></i>
+            <span>Uploading files… {{ roundedUploadProgress }}%</span>
+            <button type="button" class="cancel-upload-btn" @click="handleCancelUpload">
+              Cancel
+            </button>
+          </div>
+          <div class="upload-progress__track">
+            <div class="upload-progress__bar" :style="{ width: `${roundedUploadProgress}%` }"></div>
+          </div>
+        </div>
         
         <textarea
           id="prompt-input"
@@ -166,6 +211,16 @@ const handleDrop = (e) => {
           aria-label="Message input"
         ></textarea>
       </div>
+
+      <button 
+        v-if="showStopButton"
+        class="icon-btn stop-btn"
+        type="button"
+        @click="handleStop"
+        title="Stop response"
+      >
+        <i class="ph ph-hand-palm"></i>
+      </button>
 
       <button 
         class="icon-btn send-btn" 
@@ -257,16 +312,18 @@ const handleDrop = (e) => {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  background: var(--bg-surface);
+  background: rgba(255, 255, 255, 0.08);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
-  font-size: 0.85rem;
-  color: var(--text-secondary);
+  font-size: 0.9rem;
+  color: var(--text-primary);
   align-self: flex-start;
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .file-chip i {
   color: var(--primary);
+  font-size: 1.1rem;
 }
 
 .file-name {
@@ -283,25 +340,26 @@ const handleDrop = (e) => {
 }
 
 .file-size {
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
 }
 
 .remove-file-btn {
   background: transparent;
   border: none;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   cursor: pointer;
-  padding: 2px;
+  padding: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
+  border-radius: 999px;
   transition: all var(--transition-fast);
+  font-size: 1rem;
 }
 
 .remove-file-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.15);
   color: var(--error);
 }
 
@@ -354,6 +412,15 @@ const handleDrop = (e) => {
   color: white;
 }
 
+.stop-btn {
+  background: var(--error);
+  color: white;
+}
+
+.stop-btn:hover {
+  background: #ff4d4f;
+}
+
 .send-btn:hover:not(:disabled) {
   background: var(--primary-hover);
 }
@@ -363,5 +430,55 @@ const handleDrop = (e) => {
   color: var(--text-tertiary);
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+.upload-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+}
+
+.upload-progress__label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.upload-progress__track {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.upload-progress__bar {
+  height: 100%;
+  background: var(--primary);
+  border-radius: var(--radius-pill);
+  transition: width var(--transition-fast) ease;
+}
+
+.cancel-upload-btn {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.cancel-upload-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--error);
 }
 </style>

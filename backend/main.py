@@ -1,8 +1,9 @@
+import asyncio
 import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Dict, Iterable, List, Optional, Union
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -14,7 +15,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field
 
-from .database import get_db, init_db
+from .database import get_connection, get_db, init_db
 
 load_dotenv()
 
@@ -109,6 +110,9 @@ class MessageResponse(BaseModel):
     conversation_id: Optional[int] = None
     sender_type: str
     content: str
+    status: str = "completed"
+    parent_message_id: Optional[int] = None
+    stopped_at: Optional[str] = None
     created_at: str
     files: List[MessageFileResponse] = Field(default_factory=list)
 
@@ -122,6 +126,8 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_ROOT = Path(os.environ.get("CHAT_UPLOAD_ROOT", BASE_DIR / "chat_uploads"))
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 app.mount("/chat_uploads", StaticFiles(directory=str(UPLOAD_ROOT)), name="chat_uploads")
+SIMULATED_REPLY_DELAY = float(os.environ.get("SIMULATED_REPLY_DELAY", "1.5"))
+pending_generations: Dict[int, asyncio.Task] = {}
 
 
 def normalize_email(email: str) -> str:
@@ -202,13 +208,28 @@ def row_to_message(row: sqlite3.Row, files: Optional[List[MessageFileResponse]] 
         conversation_id=row["conversation_id"],
         sender_type=row["sender_type"],
         content=row["content"],
+        status=row["status"],
+        parent_message_id=row["parent_message_id"],
+        stopped_at=row["stopped_at"],
         created_at=row["created_at"],
         files=files or [],
     )
 
 
-def ensure_user_upload_dir(user_id: int) -> Path:
-    folder = UPLOAD_ROOT / f"user_{user_id}"
+def get_message_row_or_404(message_id: int, db: sqlite3.Connection) -> sqlite3.Row:
+    row = db.execute("SELECT * FROM message WHERE id = ?", (message_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    return row
+
+
+def ensure_user_upload_dir(user_id: int, display_name: Optional[str] = None) -> Path:
+    suffix = ""
+    if display_name:
+        slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in display_name).strip("_")
+        if slug:
+            suffix = f"_{slug}"
+    folder = UPLOAD_ROOT / f"user_{user_id}{suffix}"
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
@@ -256,8 +277,8 @@ def touch_conversation(db: sqlite3.Connection, conversation_id: int) -> None:
     )
 
 
-async def persist_upload_file(upload_file: UploadFile, user_id: int) -> tuple[str, str, int]:
-    dest_dir = ensure_user_upload_dir(user_id)
+async def persist_upload_file(upload_file: UploadFile, user_id: int, display_name: Optional[str] = None) -> tuple[str, str, int]:
+    dest_dir = ensure_user_upload_dir(user_id, display_name)
     safe_name = Path(upload_file.filename or "upload").name
     unique_name = f"{uuid4().hex}_{safe_name}"
     dest_path = dest_dir / unique_name
@@ -287,6 +308,38 @@ def build_simulated_reply(content: str, files: List[MessageFileResponse]) -> str
         lines.append("Assistant did not receive any files.")
     lines.append("(TODO: integrate large language model response here)")
     return "\n".join(lines)
+
+
+def schedule_assistant_reply(message_id: int, conversation_id: int, content: str, files: List[MessageFileResponse]) -> None:
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(run_assistant_reply(message_id, conversation_id, content, files))
+    pending_generations[message_id] = task
+
+
+async def run_assistant_reply(message_id: int, conversation_id: int, content: str, files: List[MessageFileResponse]) -> None:
+    try:
+        await asyncio.sleep(SIMULATED_REPLY_DELAY)
+        reply_text = build_simulated_reply(content, files)
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE message SET content = ?, status = 'completed', stopped_at = NULL WHERE id = ?",
+                (reply_text, message_id),
+            )
+            conn.execute("UPDATE conversation SET updated_at = datetime('now') WHERE id = ?", (conversation_id,))
+            conn.commit()
+        finally:
+            conn.close()
+    except asyncio.CancelledError:
+        raise
+    finally:
+        pending_generations.pop(message_id, None)
+
+
+def cancel_pending_generation(message_id: int) -> None:
+    task = pending_generations.pop(message_id, None)
+    if task:
+        task.cancel()
 
 
 async def get_current_user(
@@ -532,12 +585,12 @@ def delete_conversation(
     return DeleteResponse(detail="Conversation deleted")
 
 
-@app.post("/api/messages")
+@app.post("/api/messages", response_model=MessageCreateResponse)
 async def create_message(
     request: Request,
     db: sqlite3.Connection = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
-) -> MessageResponse:
+) -> MessageCreateResponse:
     form = await request.form()
     raw_content = form.get("content") or ""
     sender_type = (form.get("sender_type") or "user").lower()
@@ -562,11 +615,12 @@ async def create_message(
     if current_user.role != "admin" and conversation_row["user_id"] != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to conversation")
 
-    owner_user_id = conversation_row["user_id"]
+    conversation_owner_id = conversation_row["user_id"]
+    sender_user_id = current_user.id
 
     cursor = db.execute(
         "INSERT INTO message (user_id, sender_type, content, conversation_id) VALUES (?, ?, ?, ?)",
-        (owner_user_id, sender_type, raw_content, conversation_row["id"]),
+        (sender_user_id, sender_type, raw_content, conversation_row["id"]),
     )
     message_id = cursor.lastrowid
 
@@ -575,7 +629,7 @@ async def create_message(
 
     saved_files: List[MessageFileResponse] = []
     for upload_file in upload_list:
-        original_name, relative_path, size = await persist_upload_file(upload_file, owner_user_id)
+        original_name, relative_path, size = await persist_upload_file(upload_file, sender_user_id, current_user.display_name)
         cursor = db.execute(
             "INSERT INTO message_file (message_id, file_name, file_path, mime_type, size_bytes) VALUES (?, ?, ?, ?, ?)",
             (message_id, original_name, relative_path, upload_file.content_type, size),
@@ -596,24 +650,22 @@ async def create_message(
 
     assistant_message: Optional[MessageResponse] = None
     if sender_type == "user":
-        reply_text = build_simulated_reply(raw_content, saved_files)
         reply_cursor = db.execute(
-            "INSERT INTO message (user_id, sender_type, content, conversation_id) VALUES (?, ?, ?, ?)",
-            (owner_user_id, "assistant", reply_text, conversation_row["id"]),
+            "INSERT INTO message (user_id, sender_type, content, conversation_id, status, parent_message_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (conversation_owner_id, "assistant", "", conversation_row["id"], "pending", message_id),
         )
-        reply_row = db.execute("SELECT * FROM message WHERE id = ?", (reply_cursor.lastrowid,)).fetchone()
-        assistant_message = row_to_message(reply_row, [])
-        touch_conversation(db, conversation_row["id"])
+        pending_row = db.execute("SELECT * FROM message WHERE id = ?", (reply_cursor.lastrowid,)).fetchone()
+        assistant_message = row_to_message(pending_row, [])
+        schedule_assistant_reply(pending_row["id"], conversation_row["id"], raw_content, saved_files)
+    elif sender_type == "assistant":
+        db.execute(
+            "UPDATE message SET status = 'completed' WHERE id = ?",
+            (message_id,),
+        )
 
+    touch_conversation(db, conversation_row["id"])
     db.commit()
-    user_message_dict = user_message.model_dump()
-    response_payload = {
-        **user_message_dict,
-        "message": user_message_dict,
-    }
-    if assistant_message is not None:
-        response_payload["simulated_reply"] = assistant_message.model_dump()
-    return response_payload
+    return MessageCreateResponse(message=user_message, simulated_reply=assistant_message)
 
 
 @app.get("/api/messages", response_model=List[MessageResponse])
@@ -653,3 +705,29 @@ def list_messages(
     sql += " ORDER BY created_at ASC"
     rows = db.execute(sql, tuple(params)).fetchall()
     return [row_to_message(row, get_message_files(db, row["id"])) for row in rows]
+
+
+@app.post("/api/messages/{message_id}/stop", response_model=MessageResponse)
+async def stop_generation(
+    message_id: int,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> MessageResponse:
+    message_row = get_message_row_or_404(message_id, db)
+    if message_row["sender_type"] != "assistant":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only assistant messages can be stopped")
+    if message_row["status"] != "pending":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Message is not pending")
+    conversation = get_conversation_or_404(message_row["conversation_id"], db)
+    if current_user.role != "admin" and conversation["user_id"] != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    cancel_pending_generation(message_id)
+    cancellation_text = message_row["content"] or "Response cancelled by user."
+    db.execute(
+        "UPDATE message SET status = 'cancelled', content = ?, stopped_at = datetime('now') WHERE id = ?",
+        (cancellation_text, message_id),
+    )
+    touch_conversation(db, conversation["id"])
+    db.commit()
+    updated = get_message_row_or_404(message_id, db)
+    return row_to_message(updated, get_message_files(db, message_id))

@@ -37,9 +37,11 @@ CREATE TABLE IF NOT EXISTS message (
     sender_type TEXT NOT NULL CHECK(sender_type IN ('user','assistant')),
     content TEXT NOT NULL,
     conversation_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'completed',
+    parent_message_id INTEGER,
+    stopped_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY(user_id) REFERENCES user(id) ON DELETE CASCADE
-    -- conversation foreign key added separately for backward compatibility
 );
 """
 
@@ -66,15 +68,21 @@ def init_db() -> None:
         conn.execute(CONVERSATION_TABLE_SQL)
         conn.execute(MESSAGE_TABLE_SQL)
         conn.execute(MESSAGE_FILE_TABLE_SQL)
-        ensure_message_conversation_column(conn)
+        ensure_message_columns(conn)
         conn.commit()
 
 
-def ensure_message_conversation_column(conn: sqlite3.Connection) -> None:
+def ensure_message_columns(conn: sqlite3.Connection) -> None:
     info = conn.execute("PRAGMA table_info(message)").fetchall()
-    has_column = any(row[1] == "conversation_id" for row in info)
-    if not has_column:
+    columns = {row[1] for row in info}
+    if "conversation_id" not in columns:
         conn.execute("ALTER TABLE message ADD COLUMN conversation_id INTEGER")
+    if "status" not in columns:
+        conn.execute("ALTER TABLE message ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
+    if "parent_message_id" not in columns:
+        conn.execute("ALTER TABLE message ADD COLUMN parent_message_id INTEGER")
+    if "stopped_at" not in columns:
+        conn.execute("ALTER TABLE message ADD COLUMN stopped_at TEXT")
 
 
 def get_connection() -> sqlite3.Connection:

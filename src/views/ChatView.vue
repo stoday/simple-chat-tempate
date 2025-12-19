@@ -11,11 +11,12 @@ import SidebarItem from '../components/layout/SidebarItem.vue'
 const chatStore = useChatStore()
 const authStore = useAuthStore()
 
-const { conversations, currentMessages, isTyping } = storeToRefs(chatStore)
+const { conversations, currentMessages, isTyping, hasPendingAssistant, isUploading, uploadProgress } = storeToRefs(chatStore)
 const { user } = storeToRefs(authStore)
 
 const messagesContainer = ref(null)
 const isSidebarCollapsed = ref(false) // false = expanded (default open)
+const chatInputRef = ref(null)
 
 const scrollToBottom = async () => {
   await nextTick()
@@ -32,9 +33,22 @@ watch([currentMessages, isTyping], () => {
 const handleSend = async (payload) => {
   try {
     await chatStore.sendMessage(payload.text, payload.files)
+    chatInputRef.value?.resetInput()
   } catch (error) {
+    if (error?.code === 'ERR_CANCELED' || error?.message === 'canceled') {
+      return
+    }
     console.error('Failed to send message', error)
     showInPageAlert(error?.response?.data?.detail || error.message || 'Failed to send message.')
+  }
+}
+
+const handleStopGeneration = async () => {
+  try {
+    await chatStore.stopGenerating()
+  } catch (error) {
+    console.error('Failed to stop generation', error)
+    showInPageAlert(error?.response?.data?.detail || error.message || 'Failed to stop response.')
   }
 }
 
@@ -49,6 +63,10 @@ const handleNewChat = async () => {
 
 const handleLogout = () => {
   authStore.logout()
+}
+
+const handleCancelUpload = () => {
+  chatStore.cancelUpload()
 }
 
 const handleSelectConversation = async (conversationId) => {
@@ -230,7 +248,15 @@ onMounted(async () => {
       </div>
 
       <div class="input-area">
-        <ChatInput @send="handleSend" />
+        <ChatInput 
+          ref="chatInputRef"
+          @send="handleSend" 
+          :can-stop="hasPendingAssistant"
+          :is-uploading="isUploading"
+          :upload-progress="uploadProgress"
+          @cancel-upload="handleCancelUpload"
+          @stop="handleStopGeneration"
+        />
         <p class="disclaimer">AI can make mistakes. Please verify important information.</p>
       </div>
     </main>

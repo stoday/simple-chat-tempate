@@ -22,6 +22,9 @@ const formatMessageFromApi = (message) => ({
   conversationId: message.conversation_id ? String(message.conversation_id) : null,
   role: message.sender_type === 'assistant' ? 'assistant' : 'user',
   content: message.content,
+  status: message.status || 'completed',
+  parentMessageId: message.parent_message_id ? String(message.parent_message_id) : null,
+  stoppedAt: message.stopped_at || null,
   timestamp: message.created_at,
   files: Array.isArray(message.files) ? message.files.map(formatFileFromApi) : []
 })
@@ -36,15 +39,48 @@ const formatConversationFromApi = (conversation) => ({
 })
 
 export const useChatStore = defineStore('chat', () => {
+  let activeUploadController = null
   const conversations = ref([])
   const activeChatId = ref(null)
   const messagesMap = ref({})
   const isTyping = ref(false)
+  const isUploading = ref(false)
+  const uploadProgress = ref(0)
   const isLoadingHistory = ref(false)
   const isLoadingConversations = ref(false)
   const error = ref(null)
+  const pendingRefreshTimers = new Map()
 
   const currentMessages = computed(() => messagesMap.value[activeChatId.value] || [])
+  const pendingAssistantMessage = computed(() => {
+    const convId = activeChatId.value
+    if (!convId) return null
+    return (messagesMap.value[convId] || []).find((msg) => msg.role === 'assistant' && msg.status === 'pending') || null
+  })
+  const hasPendingAssistant = computed(() => !!pendingAssistantMessage.value)
+
+  const schedulePendingRefresh = (conversationId, delay = 1500) => {
+    if (typeof window === 'undefined') return
+    const handle = pendingRefreshTimers.get(conversationId)
+    if (handle) clearTimeout(handle)
+    const timeout = window.setTimeout(async () => {
+      pendingRefreshTimers.delete(conversationId)
+      try {
+        await loadMessages(conversationId, { includeAssistant: true })
+      } catch (err) {
+        console.error('Failed to refresh pending messages', err)
+      }
+    }, delay)
+    pendingRefreshTimers.set(conversationId, timeout)
+  }
+
+  const clearPendingRefresh = (conversationId) => {
+    const handle = pendingRefreshTimers.get(conversationId)
+    if (handle) {
+      clearTimeout(handle)
+      pendingRefreshTimers.delete(conversationId)
+    }
+  }
 
   const setMessagesForConversation = (conversationId, messages) => {
     messagesMap.value = {
@@ -71,6 +107,8 @@ export const useChatStore = defineStore('chat', () => {
       conversations.value.forEach((conv) => {
         conv.active = false
       })
+      pendingRefreshTimers.forEach((handle) => clearTimeout(handle))
+      pendingRefreshTimers.clear()
       return
     }
     activeChatId.value = conversationId
@@ -101,7 +139,7 @@ export const useChatStore = defineStore('chat', () => {
         list = [created.data]
       }
       const formatted = list.map((item) => formatConversationFromApi(item))
-      const desiredActive = activeChatId.value && formatted.some((c) => c.id === activeChatId.value)
+    const desiredActive = activeChatId.value && formatted.some((c) => c.id === activeChatId.value)
         ? activeChatId.value
         : formatted[0]?.id || null
       formatted.forEach((conv) => {
@@ -137,6 +175,12 @@ export const useChatStore = defineStore('chat', () => {
       })
       const formatted = Array.isArray(data) ? data.map(formatMessageFromApi) : []
       setMessagesForConversation(conversationId, formatted)
+      const hasPending = formatted.some((msg) => msg.role === 'assistant' && msg.status === 'pending')
+      if (hasPending) {
+        schedulePendingRefresh(conversationId)
+      } else {
+        clearPendingRefresh(conversationId)
+      }
       return formatted
     } catch (err) {
       error.value = err?.response?.data?.detail || err.message || 'Failed to load messages'
@@ -184,6 +228,7 @@ export const useChatStore = defineStore('chat', () => {
       await apiClient.delete(`/conversations/${conversationId}`)
       conversations.value = conversations.value.filter((conv) => conv.id !== conversationId)
       removeMessagesForConversation(conversationId)
+      clearPendingRefresh(conversationId)
       if (activeChatId.value === conversationId) {
         const fallback = conversations.value[0]
         if (fallback) {
@@ -226,6 +271,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     const trimmed = text?.trim() ?? ''
     const outgoingFiles = Array.isArray(files) ? files : []
+    const hasFiles = outgoingFiles.length > 0
 
     if (!trimmed && outgoingFiles.length === 0) {
       return
@@ -241,10 +287,31 @@ export const useChatStore = defineStore('chat', () => {
       }
     })
 
+    const controller = hasFiles ? new AbortController() : null
+    if (controller) {
+      activeUploadController = controller
+    }
+
     try {
       isTyping.value = true
+      if (hasFiles) {
+        uploadProgress.value = 0
+        isUploading.value = true
+      }
       const { data } = await apiClient.post('/messages', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: hasFiles ? 0 : undefined,
+        signal: controller?.signal,
+        onUploadProgress: hasFiles
+          ? (progressEvent) => {
+              const total = progressEvent.total || progressEvent.target?.getResponseHeader?.('content-length') || 0
+              if (total) {
+                uploadProgress.value = Math.min(100, Math.round((progressEvent.loaded * 100) / total))
+              } else if (uploadProgress.value < 95) {
+                uploadProgress.value = Math.min(95, uploadProgress.value + 5)
+              }
+            }
+          : undefined
       })
 
       const appended = []
@@ -254,12 +321,52 @@ export const useChatStore = defineStore('chat', () => {
         const existing = ensureMessageBucket(conversationId)
         setMessagesForConversation(conversationId, [...existing, ...appended])
       }
+      if (data?.simulated_reply?.status === 'pending') {
+        schedulePendingRefresh(conversationId)
+      }
       bumpConversation(conversationId, { updatedAt: new Date().toISOString() })
     } catch (err) {
-      error.value = err?.response?.data?.detail || err.message || 'Failed to send message'
+      const isCanceled = err?.code === 'ERR_CANCELED' || err?.message === 'canceled'
+      if (!isCanceled) {
+        error.value = err?.response?.data?.detail || err.message || 'Failed to send message'
+      }
       throw err
     } finally {
       isTyping.value = false
+      if (controller && activeUploadController === controller) {
+        activeUploadController = null
+      }
+      if (hasFiles) {
+        uploadProgress.value = 100
+        setTimeout(() => {
+          isUploading.value = false
+          uploadProgress.value = 0
+        }, 300)
+      } else {
+        isUploading.value = false
+        uploadProgress.value = 0
+      }
+    }
+  }
+
+  const cancelUpload = () => {
+    if (activeUploadController) {
+      activeUploadController.abort()
+      activeUploadController = null
+    }
+  }
+
+  const stopGenerating = async () => {
+    const conversationId = activeChatId.value
+    const pending = pendingAssistantMessage.value
+    if (!conversationId || !pending) return
+    try {
+      await apiClient.post(`/messages/${pending.id}/stop`)
+      clearPendingRefresh(conversationId)
+      await loadMessages(conversationId, { includeAssistant: true })
+    } catch (err) {
+      error.value = err?.response?.data?.detail || err.message || 'Failed to stop response'
+      throw err
     }
   }
 
@@ -271,6 +378,10 @@ export const useChatStore = defineStore('chat', () => {
     isLoadingHistory,
     isLoadingConversations,
     error,
+    isUploading,
+    uploadProgress,
+    hasPendingAssistant,
+    pendingAssistantMessage,
     loadConversations,
     loadMessages,
     selectConversation,
@@ -278,6 +389,8 @@ export const useChatStore = defineStore('chat', () => {
     deleteConversation,
     renameConversation,
     sendMessage,
+    cancelUpload,
+    stopGenerating,
     initialize
   }
 })

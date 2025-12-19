@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -24,6 +25,16 @@ def _fetch_rows(query: str, params: tuple = ()):
         return conn.execute(query, params).fetchall()
 
 
+def wait_for_status(message_id: int, expected: str, timeout: float = 3.0) -> None:
+    start = time.time()
+    while time.time() - start < timeout:
+        rows = _fetch_rows("SELECT status FROM message WHERE id = ?", (message_id,))
+        if rows and rows[0]["status"] == expected:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"message {message_id} did not reach status {expected}")
+
+
 def test_text_message_and_reply_persist(client: TestClient):
     _, user, _, user_token = bootstrap_admin_and_user(client)
     conversation_id = create_conversation(client, user_token)
@@ -33,6 +44,8 @@ def test_text_message_and_reply_persist(client: TestClient):
         headers=auth_header(user_token),
     )
     assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    wait_for_status(payload["simulated_reply"]["id"], "completed")
 
     rows = _fetch_rows("SELECT sender_type, content FROM message WHERE user_id = ? ORDER BY id", (user["id"],))
     assert len(rows) == 2  # user + simulated assistant reply
@@ -55,7 +68,7 @@ def test_single_file_message_persists_metadata(client: TestClient):
         headers=auth_header(user_token),
     )
     assert resp.status_code == 200, resp.text
-    payload = resp.json()
+    payload = resp.json()["message"]
     assert payload["user_id"] == user["id"]
 
     saved_path = upload_root / payload["files"][0]["file_path"]
@@ -81,7 +94,7 @@ def test_multiple_file_message_persists_all_metadata(client: TestClient):
         headers=auth_header(user_token),
     )
     assert resp.status_code == 200, resp.text
-    payload = resp.json()
+    payload = resp.json()["message"]
     stored_files = _fetch_rows("SELECT file_name FROM message_file WHERE message_id = ? ORDER BY id", (payload["id"],))
     simplified = [row["file_name"].split("_", 1)[-1] for row in stored_files]
     assert simplified == ["a.txt", "b.txt"]
@@ -98,6 +111,7 @@ def test_message_listing_for_user_and_admin(client: TestClient):
         headers=auth_header(user_token),
     )
     assert resp.status_code == 200
+    wait_for_status(resp.json()["simulated_reply"]["id"], "completed")
 
     resp = client.get(
         "/api/messages",
@@ -131,7 +145,7 @@ def test_file_only_message_with_no_text_persists(client: TestClient):
         headers=auth_header(user_token),
     )
     assert resp.status_code == 200, resp.text
-    payload = resp.json()
+    payload = resp.json()["message"]
     assert payload["content"] == ""
     file_rows = _fetch_rows("SELECT file_name FROM message_file WHERE message_id = ?", (payload["id"],))
     assert len(file_rows) == 1
@@ -160,8 +174,9 @@ def test_admin_can_send_assistant_message_without_simulated_reply(client: TestCl
     )
     assert resp.status_code == 200, resp.text
     payload = resp.json()
-    assert payload["sender_type"] == "assistant"
-    assert "simulated_reply" not in payload
+    assert payload["simulated_reply"] is None
+    message_payload = payload["message"]
+    assert message_payload["sender_type"] == "assistant"
 
     resp = client.get(
         "/api/messages",
@@ -186,6 +201,30 @@ def test_invalid_sender_type_rejected(client: TestClient):
     assert "Invalid sender type" in resp.text
 
 
+def test_user_can_stop_pending_reply(client: TestClient):
+    _, _, _, user_token = bootstrap_admin_and_user(client)
+    conversation_id = create_conversation(client, user_token)
+    resp = client.post(
+        "/api/messages",
+        data={"content": "Please stop me", "conversation_id": str(conversation_id)},
+        headers=auth_header(user_token),
+    )
+    assert resp.status_code == 200
+    assistant_id = resp.json()["simulated_reply"]["id"]
+
+    stop_resp = client.post(
+        f"/api/messages/{assistant_id}/stop",
+        headers=auth_header(user_token),
+    )
+    assert stop_resp.status_code == 200
+    stopped_payload = stop_resp.json()
+    assert stopped_payload["status"] == "cancelled"
+    assert stopped_payload["stopped_at"] is not None
+
+    rows = _fetch_rows("SELECT status FROM message WHERE id = ?", (assistant_id,))
+    assert rows[0]["status"] == "cancelled"
+
+
 def test_messages_remain_isolated_between_conversations(client: TestClient):
     _, _, _, user_token = bootstrap_admin_and_user(client)
     conv_a = create_conversation(client, user_token, "Chat A")
@@ -197,6 +236,7 @@ def test_messages_remain_isolated_between_conversations(client: TestClient):
         headers=auth_header(user_token),
     )
     assert resp.status_code == 200
+    wait_for_status(resp.json()["simulated_reply"]["id"], "completed")
 
     resp = client.post(
         "/api/messages",
@@ -204,6 +244,7 @@ def test_messages_remain_isolated_between_conversations(client: TestClient):
         headers=auth_header(user_token),
     )
     assert resp.status_code == 200
+    wait_for_status(resp.json()["simulated_reply"]["id"], "completed")
 
     resp_a = client.get(
         "/api/messages",
