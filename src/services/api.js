@@ -7,7 +7,7 @@ const apiClient = axios.create({
     'Content-Type': 'application/json',
     'Accept': 'application/json'
   },
-  timeout: 10000 // 10 seconds timeout
+  timeout: 0 // disable timeout (no limit)
 })
 
 // Request interceptor to add Auth Token
@@ -20,6 +20,25 @@ apiClient.interceptors.request.use(
     return config
   },
   (error) => Promise.reject(error)
+)
+
+const shouldSkipAuthRedirect = (url = '') => url.includes('/auth/login') || url.includes('/auth/register')
+
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error?.response?.status
+    const url = error?.config?.url || ''
+    if (status === 401 && !shouldSkipAuthRedirect(url)) {
+      localStorage.removeItem('auth_token')
+      localStorage.removeItem('user')
+      localStorage.removeItem('force_new_chat_on_login')
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.location.href = '/login'
+      }
+    }
+    return Promise.reject(error)
+  }
 )
 
 export default apiClient

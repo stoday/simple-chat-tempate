@@ -23,6 +23,10 @@ const props = defineProps({
   collapsed: {
     type: Boolean,
     default: false
+  },
+  disabled: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -33,6 +37,7 @@ const menuStyle = ref({ top: '0px', left: '0px' })
 const menuBtnRef = ref(null)
 
 const toggleMenu = async (e) => {
+  if (props.disabled) return
   e.stopPropagation()
   showMenu.value = !showMenu.value
   
@@ -48,6 +53,7 @@ const toggleMenu = async (e) => {
 }
 
 const handleAction = (action) => {
+  if (props.disabled) return
   // Call prop function directly
   if (action === 'rename') {
     props.onRename()
@@ -63,10 +69,10 @@ const handleAction = (action) => {
 <template>
   <div 
     class="sidebar-item" 
-    :class="{ 'is-active': active }"
+    :class="{ 'is-active': active, 'is-disabled': disabled }"
   >
 <!-- Note: Keep select as emit since it works fine on the main div -->
-    <div class="item-content" @click="$emit('select')">
+    <div class="item-content" @click="disabled ? null : $emit('select')">
       <div class="icon">
         <i class="ph ph-chat-circle"></i>
       </div>
@@ -74,7 +80,7 @@ const handleAction = (action) => {
     </div>
     
     <!-- Actions Toggle -->
-    <div class="actions-wrapper" v-if="!collapsed">
+    <div class="actions-wrapper" v-if="!collapsed && !disabled">
       <button ref="menuBtnRef" class="icon-btn menu-btn" @click="toggleMenu">
         <i class="ph ph-dots-three"></i>
       </button>
@@ -122,6 +128,20 @@ const handleAction = (action) => {
 .sidebar-item:hover, .sidebar-item.is-active {
   background: var(--bg-surface);
   color: var(--text-primary);
+}
+
+.sidebar-item.is-disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.sidebar-item.is-disabled:hover {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.sidebar-item.is-disabled .item-content {
+  cursor: not-allowed;
 }
 
 .sidebar-item:hover .menu-btn {

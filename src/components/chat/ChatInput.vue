@@ -21,6 +21,8 @@ const textareaRef = ref(null)
 const fileInputRef = ref(null)
 const selectedFiles = ref([])
 const isDragging = ref(false)
+const isSending = ref(false)
+let sendLockTimer = null
 
 const showStopButton = computed(() => !!props.canStop)
 const isUploading = computed(() => !!props.isUploading)
@@ -63,8 +65,17 @@ watch(() => prompt.value, async () => {
 })
 
 const handleSend = async () => {
-  if (!canSend.value) return
+  if (!canSend.value || isSending.value) return
   const filesToSend = [...selectedFiles.value]
+
+  isSending.value = true
+  if (sendLockTimer) {
+    clearTimeout(sendLockTimer)
+  }
+  sendLockTimer = setTimeout(() => {
+    isSending.value = false
+    sendLockTimer = null
+  }, 600)
 
   emit('send', {
     text: prompt.value,
@@ -77,7 +88,9 @@ const handleStop = () => {
 }
 
 const handleKeydown = (e) => {
+  if (e.isComposing || e.keyCode === 229) return
   if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.repeat) return
     e.preventDefault()
     handleSend()
   }
@@ -126,6 +139,11 @@ const handleCancelUpload = () => {
 const resetInput = async () => {
   prompt.value = ''
   selectedFiles.value = []
+  isSending.value = false
+  if (sendLockTimer) {
+    clearTimeout(sendLockTimer)
+    sendLockTimer = null
+  }
   await nextTick()
   resetHeight()
 }

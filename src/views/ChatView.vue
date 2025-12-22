@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, nextTick, onMounted } from 'vue'
+import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useChatStore } from '../stores/chat'
 import { useAuthStore } from '../stores/auth'
@@ -11,7 +11,7 @@ import SidebarItem from '../components/layout/SidebarItem.vue'
 const chatStore = useChatStore()
 const authStore = useAuthStore()
 
-const { conversations, currentMessages, isTyping, hasPendingAssistant, isUploading, uploadProgress } = storeToRefs(chatStore)
+const { conversations, currentMessages, isTyping, hasPendingAssistant, isUploading, uploadProgress, activeChatId } = storeToRefs(chatStore)
 const { user } = storeToRefs(authStore)
 
 const messagesContainer = ref(null)
@@ -165,11 +165,35 @@ onMounted(async () => {
   try {
     await chatStore.initialize()
   } catch (error) {
+    if (error?.response?.status === 401) {
+      return
+    }
     console.error('Failed to initialize chat state', error)
     showInPageAlert(error?.response?.data?.detail || error.message || 'Failed to load conversations.')
   }
   scrollToBottom()
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', handleReconnect)
+  }
 })
+
+onUnmounted(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('online', handleReconnect)
+  }
+})
+
+const handleReconnect = async () => {
+  try {
+    await chatStore.loadConversations()
+    if (activeChatId.value) {
+      await chatStore.loadMessages(activeChatId.value, { includeAssistant: true })
+    }
+  } catch (error) {
+    console.error('Failed to refresh after reconnect', error)
+  }
+}
 </script>
 
 <template>
@@ -196,6 +220,7 @@ onMounted(async () => {
           :key="item.id" 
           :title="item.title" 
           :active="item.active"
+          :disabled="item.offline"
           :collapsed="isSidebarCollapsed"
           @select="() => handleSelectConversation(item.id)"
           :on-delete="() => handleDeleteChat(item.id)"
@@ -235,7 +260,7 @@ onMounted(async () => {
         
         <!-- Typing Indicator (Simple) -->
         <!-- Typing Indicator (Animated) -->
-        <div v-if="isTyping" class="typing-indicator-wrapper">
+        <div v-if="isTyping || hasPendingAssistant" class="typing-indicator-wrapper">
           <div class="avatar assistant-avatar">
             <i class="ph ph-robot"></i>
           </div>

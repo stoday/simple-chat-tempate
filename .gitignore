@@ -1,6 +1,9 @@
 .vscode
 .env
 *.db
+Knowledge
+chat_uploads
+akasha_package
 
 # Logs
 logs

@@ -26,6 +26,7 @@ const formatUser = (raw) => {
 
 const FORCE_NEW_CHAT_KEY = 'force_new_chat_on_login'
 
+const AUTH_REQUEST_TIMEOUT_MS = 30000
 const loadStoredUser = () => {
   const stored = safeParse(localStorage.getItem('user'))
   return formatUser(stored)
@@ -57,8 +58,25 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('auth_token')
   }
 
-  const performLoginRequest = async (email, password) => {
-    const { data } = await apiClient.post('/auth/login', { email, password })
+  const runWithTimeout = async (requestFn, timeoutMs = AUTH_REQUEST_TIMEOUT_MS) => {
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      return await requestFn(controller.signal)
+    } catch (err) {
+      if (err?.code === 'ERR_CANCELED') {
+        const timeoutError = new Error('Request timed out. Please try again.')
+        timeoutError.code = 'REQUEST_TIMEOUT'
+        throw timeoutError
+      }
+      throw err
+    } finally {
+      clearTimeout(timeoutId)
+    }
+  }
+
+  const performLoginRequest = async (email, password, signal) => {
+    const { data } = await apiClient.post('/auth/login', { email, password }, { signal })
     const formattedUser = formatUser(data.user)
     persistSession(formattedUser, data.access_token)
   }
@@ -67,7 +85,7 @@ export const useAuthStore = defineStore('auth', () => {
     isLoading.value = true
     error.value = null
     try {
-      await performLoginRequest(email, password)
+      await runWithTimeout((signal) => performLoginRequest(email, password, signal))
       localStorage.setItem(FORCE_NEW_CHAT_KEY, '1')
       router.push('/')
     } catch (err) {
@@ -82,12 +100,12 @@ export const useAuthStore = defineStore('auth', () => {
     isLoading.value = true
     error.value = null
     try {
-      await apiClient.post('/auth/register', {
+      await runWithTimeout((signal) => apiClient.post('/auth/register', {
         email,
         password,
         display_name: displayName
-      })
-      await performLoginRequest(email, password)
+      }, { signal }))
+      await runWithTimeout((signal) => performLoginRequest(email, password, signal))
       localStorage.setItem(FORCE_NEW_CHAT_KEY, '1')
       router.push('/')
     } catch (err) {

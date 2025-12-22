@@ -18,7 +18,14 @@ from pydantic import BaseModel, EmailStr, Field
 
 from .database import get_connection, get_db, init_db
 
+import akasha
+from .tools import agent
+
 load_dotenv()
+ak = akasha.ask(model='gemini:gemini-3-flash-preview',
+                temperature=1.0,
+                max_input_tokens=1048576,
+                max_output_tokens=65536)
 
 SECRET_KEY = os.environ.get("SECRET_KEY")
 if not SECRET_KEY:
@@ -353,34 +360,108 @@ def persist_assistant_files(
 
 
 def build_simulated_reply(
-    content: str, files: List[MessageFileResponse]
+    content: str,
+    files: List[MessageFileResponse],
+    db: sqlite3.Connection,
+    conversation_id: int,
+    exclude_message_id: Optional[int] = None,
 ) -> Union[str, tuple[str, List[AssistantGeneratedFile]]]:
     """Placeholder assistant response until an LLM is connected."""
     text = content.strip() if content and content.strip() else "(no text provided)"
+    history_rows = db.execute(
+        """
+        SELECT id, sender_type, content, status
+        FROM message
+        WHERE conversation_id = ?
+          AND status != 'pending'
+        ORDER BY created_at ASC, id ASC
+        """,
+        (conversation_id,),
+    ).fetchall()
+    history_lines = []
+    for row in history_rows:
+        if exclude_message_id and row["id"] == exclude_message_id:
+            continue
+        content_text = (row["content"] or "").strip()
+        if not content_text:
+            continue
+        speaker = "使用者" if row["sender_type"] == "user" else "AI"
+        history_lines.append(f"{speaker}: {content_text}")
+    history_block = "\n".join(history_lines)
+    prompt = f"# 歷史對話紀錄\n{history_block}\n\n# 使用者提問\n{text}"
     lines = [f"收到的文字訊息: {text}"]
-    if files:
-        lines.append("收到的檔案訊息:")
-        for file in files:
-            mime = file.mime_type or "unknown type"
-            lines.append(f"- {file.file_name} ({mime})")
-    else:
-        lines.append("未收到檔案訊息。")
+        
+    print("start akasha")
+    print(prompt)
+    lines = agent(question=prompt)
+    print("end akasha")
+    
+    # 開頭為 [THOUGTH]: / [ACTION]: / [OBSERVATION]: / [FINAL ANSWER]: 都濾除掉
+    lines_filtered = []
+    for line in lines:
+        if line.startswith("\n[THOUGHT]:") or line.startswith("\n[ACTION]:") or line.startswith("\n[OBSERVATION]:") or line.startswith("\n[FINAL ANSWER]:"):
+            continue
+        else:
+            lines_filtered.append(line)
+        
+    lines = lines_filtered
+        
+    # if files:
+    #     lines.append("收到的檔案訊息:")
+    #     for file in files:
+    #         mime = file.mime_type or "unknown type"
+    #         lines.append(f"- {file.file_name} ({mime})")
+    # else:
+    #     lines.append("未收到檔案訊息。")
 
-    files_summary = "\n".join(f"- {file.file_name}" for file in files) if files else "- (none)"
-    generated_files = [
-        AssistantGeneratedFile(
-            file_name="assistant_reply.txt",
-            text=f"Echo: {text}\nReceived files:\n{files_summary}\n",
-            mime_type="text/plain",
-        )
-    ]
+    # files_summary = "\n".join(f"- {file.file_name}" for file in files) if files else "- (none)"
+    # generated_files = [
+    #     AssistantGeneratedFile(
+    #         file_name="assistant_reply.txt",
+    #         text=f"Echo: {text}\nReceived files:\n{files_summary}\n",
+    #         mime_type="text/plain",
+    #     )
+    # ]
 
-    lines.append("可供下載的檔案:")
-    for generated in generated_files:
-        lines.append(f"- {generated.file_name}")
-    lines.append("下載連結:")
-    lines.append(DOWNLOAD_LINKS_PLACEHOLDER)
-    return "\n".join(lines), generated_files
+    # lines.append("可供下載的檔案:")
+    # for generated in generated_files:
+    #     lines.append(f"- {generated.file_name}")
+    # lines.append("下載連結:")
+    # lines.append(DOWNLOAD_LINKS_PLACEHOLDER)
+    # return "\n".join(lines), generated_files
+    
+    return "\n".join(lines)
+
+
+# def build_simulated_reply(
+#     content: str, files: List[MessageFileResponse]
+# ) -> Union[str, tuple[str, List[AssistantGeneratedFile]]]:
+#     """Placeholder assistant response until an LLM is connected."""
+#     text = content.strip() if content and content.strip() else "(no text provided)"
+#     lines = [f"收到的文字訊息: {text}"]
+#     if files:
+#         lines.append("收到的檔案訊息:")
+#         for file in files:
+#             mime = file.mime_type or "unknown type"
+#             lines.append(f"- {file.file_name} ({mime})")
+#     else:
+#         lines.append("未收到檔案訊息。")
+
+#     files_summary = "\n".join(f"- {file.file_name}" for file in files) if files else "- (none)"
+#     generated_files = [
+#         AssistantGeneratedFile(
+#             file_name="assistant_reply.txt",
+#             text=f"Echo: {text}\nReceived files:\n{files_summary}\n",
+#             mime_type="text/plain",
+#         )
+#     ]
+
+#     lines.append("可供下載的檔案:")
+#     for generated in generated_files:
+#         lines.append(f"- {generated.file_name}")
+#     lines.append("下載連結:")
+#     lines.append(DOWNLOAD_LINKS_PLACEHOLDER)
+#     return "\n".join(lines), generated_files
 
 
 def schedule_assistant_reply(
@@ -408,13 +489,18 @@ async def run_assistant_reply(
 ) -> None:
     try:
         await asyncio.sleep(SIMULATED_REPLY_DELAY)
-        reply_payload = build_simulated_reply(content, files)
-        if isinstance(reply_payload, tuple):
-            reply_text, generated_files = reply_payload
-        else:
-            reply_text, generated_files = reply_payload, []
         conn = get_connection()
         try:
+            parent_row = conn.execute(
+                "SELECT parent_message_id FROM message WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+            parent_message_id = parent_row["parent_message_id"] if parent_row else None
+            reply_payload = build_simulated_reply(content, files, conn, conversation_id, parent_message_id)
+            if isinstance(reply_payload, tuple):
+                reply_text, generated_files = reply_payload
+            else:
+                reply_text, generated_files = reply_payload, []
             saved_files = persist_assistant_files(conn, message_id, owner_user_id, owner_display_name, generated_files)
             final_text = reply_text
             if saved_files:

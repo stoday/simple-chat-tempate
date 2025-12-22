@@ -38,7 +38,48 @@ const formatConversationFromApi = (conversation) => ({
   active: false
 })
 
+const CONVERSATION_CACHE_KEY = 'chat_conversations_cache'
 const FORCE_NEW_CHAT_KEY = 'force_new_chat_on_login'
+const OFFLINE_PLACEHOLDER_ID = 'offline-new-chat'
+
+const loadCachedConversations = () => {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = localStorage.getItem(CONVERSATION_CACHE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch (err) {
+    console.warn('Failed to parse cached conversations', err)
+    return []
+  }
+}
+
+const saveCachedConversations = (list) => {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.setItem(CONVERSATION_CACHE_KEY, JSON.stringify(list))
+  } catch (err) {
+    console.warn('Failed to cache conversations', err)
+  }
+}
+
+const applyActiveToConversations = (list, desiredActive) => {
+  const fallbackActive = desiredActive || list[0]?.id || null
+  list.forEach((conv) => {
+    conv.active = conv.id === fallbackActive
+  })
+  return fallbackActive
+}
+
+const buildOfflinePlaceholder = () => ({
+  id: OFFLINE_PLACEHOLDER_ID,
+  title: 'New Chat (offline)',
+  createdAt: null,
+  updatedAt: null,
+  messageCount: 0,
+  active: false,
+  offline: true
+})
 
 export const useChatStore = defineStore('chat', () => {
   let activeUploadController = null
@@ -141,13 +182,12 @@ export const useChatStore = defineStore('chat', () => {
         list = [created.data]
       }
       const formatted = list.map((item) => formatConversationFromApi(item))
-    const desiredActive = activeChatId.value && formatted.some((c) => c.id === activeChatId.value)
+      const desiredActive = activeChatId.value && formatted.some((c) => c.id === activeChatId.value)
         ? activeChatId.value
         : formatted[0]?.id || null
-      formatted.forEach((conv) => {
-        conv.active = conv.id === desiredActive
-      })
+      applyActiveToConversations(formatted, desiredActive)
       conversations.value = formatted
+      saveCachedConversations(formatted)
       if (desiredActive) {
         setActiveConversation(desiredActive)
       } else {
@@ -156,6 +196,22 @@ export const useChatStore = defineStore('chat', () => {
       return formatted
     } catch (err) {
       error.value = err?.response?.data?.detail || err.message || 'Failed to load conversations'
+      if (!conversations.value.length) {
+        const cached = loadCachedConversations()
+        if (cached.length) {
+          const desiredActive = activeChatId.value && cached.some((c) => c.id === activeChatId.value)
+            ? activeChatId.value
+            : cached[0]?.id || null
+          applyActiveToConversations(cached, desiredActive)
+          conversations.value = cached
+          if (desiredActive) {
+            setActiveConversation(desiredActive)
+          }
+        } else {
+          conversations.value = [buildOfflinePlaceholder()]
+          activeChatId.value = null
+        }
+      }
       throw err
     } finally {
       isLoadingConversations.value = false
@@ -222,6 +278,7 @@ export const useChatStore = defineStore('chat', () => {
       })
       formatted.active = true
       conversations.value.unshift(formatted)
+      saveCachedConversations(conversations.value)
       setActiveConversation(formatted.id)
       setMessagesForConversation(formatted.id, [])
       return formatted
@@ -236,6 +293,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       await apiClient.delete(`/conversations/${conversationId}`)
       conversations.value = conversations.value.filter((conv) => conv.id !== conversationId)
+      saveCachedConversations(conversations.value)
       removeMessagesForConversation(conversationId)
       clearPendingRefresh(conversationId)
       if (activeChatId.value === conversationId) {
@@ -265,6 +323,7 @@ export const useChatStore = defineStore('chat', () => {
         if (wasActive) {
           setActiveConversation(conversationId)
         }
+        saveCachedConversations(conversations.value)
       }
       return formatted
     } catch (err) {

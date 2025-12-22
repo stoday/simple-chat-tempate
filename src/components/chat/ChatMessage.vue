@@ -28,6 +28,13 @@ const renderedContent = computed(() => {
 })
 
 const isUser = computed(() => props.message.role === 'user')
+const isPendingAssistant = computed(() => !isUser.value && props.message.status === 'pending')
+const hasVisibleContent = computed(() => {
+  const content = (props.message.content || '').trim()
+  const hasFiles = Array.isArray(props.message.files) && props.message.files.length > 0
+  return content.length > 0 || hasFiles
+})
+const hidePendingPlaceholder = computed(() => isPendingAssistant.value && !hasVisibleContent.value)
 
 // 元件級的 container ref，避免使用 document.querySelector 全域選取
 const containerRef = ref(null)
@@ -91,8 +98,8 @@ watch(renderedContent, async () => {
 </script>
 
 <template>
-  <div class="message-wrapper">
-    <div class="avatar" :class="isUser ? 'user-avatar' : 'assistant-avatar'">
+  <div v-if="!hidePendingPlaceholder" class="message-wrapper">
+    <div v-if="!isPendingAssistant" class="avatar" :class="isUser ? 'user-avatar' : 'assistant-avatar'">
       <i class="ph" :class="isUser ? 'ph-smiley' : 'ph-robot'"></i>
     </div>
     
@@ -170,6 +177,8 @@ watch(renderedContent, async () => {
   background: transparent;
   color: #ffffff; /* Pure white for max contrast */
   padding-left: 0;
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
 }
 
 /* File Attachment Styles */
@@ -277,6 +286,25 @@ watch(renderedContent, async () => {
   color: #e2e8f0; /* Light grey for code blocks */
   background: transparent;
   padding: 0;
+}
+:deep(.markdown-body table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: var(--space-3) 0;
+  color: #ffffff;
+}
+:deep(.markdown-body th),
+:deep(.markdown-body td) {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+}
+:deep(.markdown-body thead th) {
+  background: rgba(255, 255, 255, 0.08);
+}
+:deep(.markdown-body tbody tr:nth-child(even)) {
+  background: rgba(255, 255, 255, 0.03);
 }
 :deep(.markdown-body .copy-btn) {
   position: absolute;
