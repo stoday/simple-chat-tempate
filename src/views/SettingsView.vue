@@ -65,6 +65,21 @@ const submitAccount = async () => {
 const users = ref([])
 const usersLoading = ref(false)
 const adminNotice = ref(null)
+const ragFiles = ref([])
+const ragLoading = ref(false)
+const ragNotice = ref(null)
+const ragUploading = ref(false)
+const ragDragActive = ref(false)
+const mssqlNotice = ref(null)
+const mssqlSaving = ref(false)
+const mssqlTesting = ref(false)
+const mssqlForm = reactive({
+  server: '',
+  database: '',
+  username: '',
+  password: '',
+  useTrusted: false
+})
 const editingUserId = ref(null)
 const editForm = reactive({
   email: '',
@@ -87,15 +102,50 @@ const loadUsers = async () => {
   }
 }
 
+const loadRagFiles = async () => {
+  if (!isAdmin.value) return
+  ragLoading.value = true
+  ragNotice.value = null
+  try {
+    const { data } = await apiClient.get('/admin/rag-files')
+    ragFiles.value = Array.isArray(data) ? data : []
+  } catch (err) {
+    ragNotice.value = { type: 'error', text: err?.response?.data?.detail || 'Failed to load RAG files.' }
+  } finally {
+    ragLoading.value = false
+  }
+}
+
+const loadMssqlConfig = async () => {
+  if (!isAdmin.value) return
+  mssqlNotice.value = null
+  try {
+    const { data } = await apiClient.get('/admin/mssql-config')
+    mssqlForm.server = data?.server || ''
+    mssqlForm.database = data?.database || ''
+    mssqlForm.username = data?.username || ''
+    mssqlForm.password = data?.password || ''
+    mssqlForm.useTrusted = !!data?.use_trusted
+  } catch (err) {
+    mssqlNotice.value = { type: 'error', text: err?.response?.data?.detail || 'Failed to load MSSQL config.' }
+  }
+}
+
 onMounted(() => {
   if (isAdmin.value) {
     loadUsers()
+    loadRagFiles()
+    loadMssqlConfig()
   }
 })
 
 watch(isAdmin, (value) => {
   if (value && users.value.length === 0) {
     loadUsers()
+  }
+  if (value && ragFiles.value.length === 0) {
+    loadRagFiles()
+    loadMssqlConfig()
   }
 })
 
@@ -156,6 +206,139 @@ const deleteUser = async (user) => {
     adminNotice.value = { type: 'success', text: 'User deleted.' }
   } catch (err) {
     adminNotice.value = { type: 'error', text: err?.response?.data?.detail || 'Failed to delete user.' }
+  }
+}
+
+const formatBytes = (bytes = 0) => {
+  if (!bytes || Number.isNaN(bytes)) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = bytes
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+const uploadRagFiles = async (files) => {
+  if (!files.length) return
+  ragUploading.value = true
+  ragNotice.value = null
+  const formData = new FormData()
+  files.forEach((file) => formData.append('files', file))
+  try {
+    await apiClient.post('/admin/rag-files', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    await loadRagFiles()
+    ragNotice.value = { type: 'success', text: 'Files uploaded.' }
+  } catch (err) {
+    ragNotice.value = { type: 'error', text: err?.response?.data?.detail || 'Failed to upload files.' }
+  } finally {
+    ragUploading.value = false
+  }
+}
+
+const handleRagUpload = async (event) => {
+  const files = Array.from(event.target.files || [])
+  await uploadRagFiles(files)
+  event.target.value = ''
+}
+
+const handleRagDrop = async (event) => {
+  event.preventDefault()
+  ragDragActive.value = false
+  const files = Array.from(event.dataTransfer?.files || [])
+  await uploadRagFiles(files)
+}
+
+const handleRagDragOver = (event) => {
+  event.preventDefault()
+  ragDragActive.value = true
+}
+
+const handleRagDragLeave = () => {
+  ragDragActive.value = false
+}
+
+const deleteRagFile = async (file) => {
+  if (!window.confirm(`Delete ${file.file_name}?`)) return
+  ragNotice.value = null
+  try {
+    await apiClient.delete(`/admin/rag-files/${file.id}`)
+    ragFiles.value = ragFiles.value.filter((item) => item.id !== file.id)
+    ragNotice.value = { type: 'success', text: 'File deleted.' }
+  } catch (err) {
+    ragNotice.value = { type: 'error', text: err?.response?.data?.detail || 'Failed to delete file.' }
+  }
+}
+
+const downloadRagFile = async (file) => {
+  ragNotice.value = null
+  try {
+    const response = await apiClient.get(`/admin/rag-files/${file.id}/download`, {
+      responseType: 'blob'
+    })
+    const url = window.URL.createObjectURL(response.data)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = file.file_name || 'download'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.URL.revokeObjectURL(url)
+  } catch (err) {
+    ragNotice.value = { type: 'error', text: err?.response?.data?.detail || 'Failed to download file.' }
+  }
+}
+
+const saveMssqlConfig = async () => {
+  mssqlSaving.value = true
+  mssqlNotice.value = null
+  try {
+    const payload = {
+      server: mssqlForm.server || null,
+      database: mssqlForm.database || null,
+      username: mssqlForm.username || null,
+      password: mssqlForm.password || null,
+      use_trusted: mssqlForm.useTrusted
+    }
+    const { data } = await apiClient.put('/admin/mssql-config', payload)
+    mssqlForm.server = data?.server || ''
+    mssqlForm.database = data?.database || ''
+    mssqlForm.username = data?.username || ''
+    mssqlForm.password = data?.password || ''
+    mssqlForm.useTrusted = !!data?.use_trusted
+    mssqlNotice.value = { type: 'success', text: 'MSSQL config saved.' }
+  } catch (err) {
+    mssqlNotice.value = { type: 'error', text: err?.response?.data?.detail || 'Failed to save MSSQL config.' }
+  } finally {
+    mssqlSaving.value = false
+  }
+}
+
+const testMssqlConfig = async () => {
+  mssqlTesting.value = true
+  mssqlNotice.value = null
+  try {
+    const payload = {
+      server: mssqlForm.server || null,
+      database: mssqlForm.database || null,
+      username: mssqlForm.username || null,
+      password: mssqlForm.password || null,
+      use_trusted: mssqlForm.useTrusted
+    }
+    const { data } = await apiClient.post('/admin/mssql-config/test', payload)
+    if (data?.ok) {
+      mssqlNotice.value = { type: 'success', text: data.detail || 'Connection successful.' }
+    } else {
+      mssqlNotice.value = { type: 'error', text: data?.detail || 'Connection failed.' }
+    }
+  } catch (err) {
+    mssqlNotice.value = { type: 'error', text: err?.response?.data?.detail || 'Connection failed.' }
+  } finally {
+    mssqlTesting.value = false
   }
 }
 </script>
@@ -284,6 +467,127 @@ const deleteUser = async (user) => {
         </tbody>
       </table>
     </section>
+
+    <section v-if="isAdmin" class="card">
+      <div class="section-header">
+        <div>
+          <h2>RAG File Library</h2>
+          <p>Upload knowledge files for retrieval and manage existing assets.</p>
+        </div>
+        <button class="btn btn-secondary" @click="loadRagFiles" :disabled="ragLoading">
+          <i class="ph ph-arrows-clockwise"></i>
+          Refresh
+        </button>
+      </div>
+
+      <p v-if="ragNotice" :class="['status', ragNotice.type]">
+        {{ ragNotice.text }}
+      </p>
+
+      <div
+        class="upload-row upload-dropzone"
+        :class="{ active: ragDragActive }"
+        @dragover="handleRagDragOver"
+        @dragleave="handleRagDragLeave"
+        @drop="handleRagDrop"
+      >
+        <label class="upload-pill">
+          <input
+            type="file"
+            class="upload-input"
+            multiple
+            accept=".pdf,.doc,.docx,.md,.csv,.txt,.xls,.xlsx"
+            @change="handleRagUpload"
+            :disabled="ragUploading"
+          />
+          <i class="ph ph-upload-simple"></i>
+          {{ ragUploading ? 'Uploading...' : 'Add Files' }}
+        </label>
+        <span class="hint">Drag & drop files here or click Add Files.</span>
+        <span class="hint">Accepted: pdf, doc, docx, md, csv, txt, xls, xlsx.</span>
+      </div>
+
+      <div v-if="ragLoading" class="loading-state">
+        Loading files...
+      </div>
+
+      <table v-else class="users-table">
+        <thead>
+          <tr>
+            <th>File</th>
+            <th>Size</th>
+            <th>Uploaded</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="file in ragFiles" :key="file.id">
+            <td>{{ file.file_name }}</td>
+            <td>{{ formatBytes(file.size_bytes) }}</td>
+            <td>{{ file.created_at }}</td>
+            <td>
+              <button class="btn btn-ghost" type="button" @click="downloadRagFile(file)">
+                <i class="ph ph-download-simple"></i>
+                Download
+              </button>
+              <button class="btn btn-ghost danger" type="button" @click="deleteRagFile(file)">
+                <i class="ph ph-trash"></i>
+                Remove
+              </button>
+            </td>
+          </tr>
+          <tr v-if="!ragFiles.length">
+            <td colspan="4">No files uploaded yet.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section v-if="isAdmin" class="card">
+      <div class="section-header">
+        <div>
+          <h2>MSSQL Connection</h2>
+          <p>Configure the database connection used by query tools.</p>
+        </div>
+      </div>
+
+      <p v-if="mssqlNotice" :class="['status', mssqlNotice.type]">
+        {{ mssqlNotice.text }}
+      </p>
+
+      <form class="form-grid" @submit.prevent="saveMssqlConfig">
+        <label>
+          Server (host:port)
+          <input type="text" v-model="mssqlForm.server" placeholder="localhost,1433" />
+        </label>
+        <label>
+          Database
+          <input type="text" v-model="mssqlForm.database" placeholder="master" />
+        </label>
+        <label>
+          Username
+          <input type="text" v-model="mssqlForm.username" />
+        </label>
+        <label>
+          Password
+          <input type="password" v-model="mssqlForm.password" />
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" v-model="mssqlForm.useTrusted" />
+          Use Windows Trusted Authentication
+        </label>
+        <div class="actions">
+          <button class="btn btn-primary" type="submit" :disabled="mssqlSaving">
+            <i class="ph ph-floppy-disk"></i>
+            Save Connection
+          </button>
+          <button class="btn btn-ghost" type="button" :disabled="mssqlTesting" @click="testMssqlConfig">
+            <i class="ph ph-plug"></i>
+            {{ mssqlTesting ? 'Testing...' : 'Test Connection' }}
+          </button>
+        </div>
+      </form>
+    </section>
   </div>
 </template>
 
@@ -375,6 +679,11 @@ select {
   color: var(--text-primary);
 }
 
+.btn-ghost.danger {
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #ef4444;
+}
+
 .status {
   margin-top: 1rem;
   padding: 0.75rem;
@@ -456,6 +765,54 @@ select {
 .loading-state {
   padding: 1rem 0;
   color: var(--text-secondary);
+}
+
+.upload-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.upload-dropzone {
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  border: 1px dashed rgba(148, 163, 184, 0.35);
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.upload-dropzone.active {
+  border-color: rgba(59, 130, 246, 0.6);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.upload-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 999px;
+  border: 1px dashed rgba(148, 163, 184, 0.4);
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.upload-input {
+  display: none;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.checkbox-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
 }
 
 @media (max-width: 768px) {

@@ -58,6 +58,31 @@ CREATE TABLE IF NOT EXISTS message_file (
 );
 """
 
+RAG_FILE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS rag_file (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    mime_type TEXT,
+    size_bytes INTEGER,
+    uploaded_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(uploaded_by) REFERENCES user(id) ON DELETE SET NULL
+);
+"""
+
+MSSQL_CONFIG_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS mssql_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    server TEXT,
+    database TEXT,
+    username TEXT,
+    password TEXT,
+    use_trusted INTEGER DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
 
 def init_db() -> None:
     """Create the SQLite database file and ensure required tables exist."""
@@ -68,6 +93,8 @@ def init_db() -> None:
         conn.execute(CONVERSATION_TABLE_SQL)
         conn.execute(MESSAGE_TABLE_SQL)
         conn.execute(MESSAGE_FILE_TABLE_SQL)
+        conn.execute(RAG_FILE_TABLE_SQL)
+        conn.execute(MSSQL_CONFIG_TABLE_SQL)
         ensure_message_columns(conn)
         conn.commit()
 

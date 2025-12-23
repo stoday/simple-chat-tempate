@@ -2,9 +2,12 @@
 import { ref, computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '../stores/auth'
+import { useAppConfigStore } from '../stores/appConfig'
 
 const authStore = useAuthStore()
 const { isLoading, error } = storeToRefs(authStore)
+const appConfigStore = useAppConfigStore()
+const { config } = storeToRefs(appConfigStore)
 
 const displayName = ref('')
 const email = ref('')
@@ -44,10 +47,10 @@ const handleRegister = async () => {
     <div class="login-card">
       <div class="logo-area">
         <div class="logo-icon-wrapper">
-          <i class="ph ph-chat-teardrop-text logo-icon"></i>
+          <i class="ph logo-icon" :class="config.branding.brand_icon"></i>
         </div>
         <h1>Create Account</h1>
-        <p>Set up your SimpleChat workspace</p>
+        <p>Set up your {{ config.branding.title }} workspace</p>
       </div>
       
       <form @submit.prevent="handleRegister" class="login-form">

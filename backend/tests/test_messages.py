@@ -45,10 +45,10 @@ def test_text_message_and_reply_persist(client: TestClient):
     )
     assert resp.status_code == 200, resp.text
     payload = resp.json()
-    wait_for_status(payload["simulated_reply"]["id"], "completed")
+    wait_for_status(payload["reply"]["id"], "completed")
 
     rows = _fetch_rows("SELECT sender_type, content FROM message WHERE user_id = ? ORDER BY id", (user["id"],))
-    assert len(rows) == 2  # user + simulated assistant reply
+    assert len(rows) == 2  # user + assistant reply
     assert rows[0]["sender_type"] == "user"
     assert rows[0]["content"] == "Hi there"
     assert rows[1]["sender_type"] == "assistant"
@@ -113,7 +113,7 @@ def test_message_listing_for_user_and_admin(client: TestClient):
         headers=auth_header(user_token),
     )
     assert resp.status_code == 200
-    wait_for_status(resp.json()["simulated_reply"]["id"], "completed")
+    wait_for_status(resp.json()["reply"]["id"], "completed")
 
     resp = client.get(
         "/api/messages",
@@ -145,7 +145,7 @@ def test_assistant_reply_generates_downloadable_file(client: TestClient):
         headers=auth_header(user_token),
     )
     assert resp.status_code == 200, resp.text
-    assistant_id = resp.json()["simulated_reply"]["id"]
+    assistant_id = resp.json()["reply"]["id"]
     wait_for_status(assistant_id, "completed")
 
     resp = client.get(
@@ -195,7 +195,7 @@ def test_user_cannot_send_assistant_message(client: TestClient):
     assert "Only admins can create assistant messages" in resp.text
 
 
-def test_admin_can_send_assistant_message_without_simulated_reply(client: TestClient):
+def test_admin_can_send_assistant_message_without_reply(client: TestClient):
     admin, _, admin_token, _ = bootstrap_admin_and_user(client)
     conversation_id = create_conversation(client, admin_token)
     resp = client.post(
@@ -205,7 +205,7 @@ def test_admin_can_send_assistant_message_without_simulated_reply(client: TestCl
     )
     assert resp.status_code == 200, resp.text
     payload = resp.json()
-    assert payload["simulated_reply"] is None
+    assert payload["reply"] is None
     message_payload = payload["message"]
     assert message_payload["sender_type"] == "assistant"
 
@@ -241,7 +241,7 @@ def test_user_can_stop_pending_reply(client: TestClient):
         headers=auth_header(user_token),
     )
     assert resp.status_code == 200
-    assistant_id = resp.json()["simulated_reply"]["id"]
+    assistant_id = resp.json()["reply"]["id"]
 
     stop_resp = client.post(
         f"/api/messages/{assistant_id}/stop",
@@ -267,7 +267,7 @@ def test_messages_remain_isolated_between_conversations(client: TestClient):
         headers=auth_header(user_token),
     )
     assert resp.status_code == 200
-    wait_for_status(resp.json()["simulated_reply"]["id"], "completed")
+    wait_for_status(resp.json()["reply"]["id"], "completed")
 
     resp = client.post(
         "/api/messages",
@@ -275,7 +275,7 @@ def test_messages_remain_isolated_between_conversations(client: TestClient):
         headers=auth_header(user_token),
     )
     assert resp.status_code == 200
-    wait_for_status(resp.json()["simulated_reply"]["id"], "completed")
+    wait_for_status(resp.json()["reply"]["id"], "completed")
 
     resp_a = client.get(
         "/api/messages",
@@ -294,7 +294,7 @@ def test_messages_remain_isolated_between_conversations(client: TestClient):
     msgs_a = resp_a.json()
     msgs_b = resp_b.json()
 
-    assert len(msgs_a) == 2  # user + simulated reply
+    assert len(msgs_a) == 2  # user + assistant reply
     assert len(msgs_b) == 2
     assert msgs_a[0]["content"] == "Message for A"
     assert msgs_b[0]["content"] == "Message for B"

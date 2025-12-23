@@ -1,10 +1,14 @@
 import asyncio
+import json
+import multiprocessing
+import queue as py_queue
+import traceback
 import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -12,6 +16,7 @@ from fastapi import Depends, FastAPI, HTTPException, UploadFile, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field
@@ -22,10 +27,10 @@ import akasha
 from .tools import agent
 
 load_dotenv()
-ak = akasha.ask(model='gemini:gemini-3-flash-preview',
-                temperature=1.0,
-                max_input_tokens=1048576,
-                max_output_tokens=65536)
+# ak = akasha.ask(model='gemini:gemini-3-flash-preview',
+#                 temperature=1.0,
+#                 max_input_tokens=1048576,
+#                 max_output_tokens=65536)
 
 SECRET_KEY = os.environ.get("SECRET_KEY")
 if not SECRET_KEY:
@@ -112,6 +117,38 @@ class MessageFileResponse(BaseModel):
     size_bytes: Optional[int] = None
 
 
+class RagFileResponse(BaseModel):
+    id: int
+    file_name: str
+    file_path: str
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    uploaded_by: Optional[int] = None
+    created_at: str
+
+
+class MssqlConfigResponse(BaseModel):
+    server: Optional[str] = None
+    database: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    use_trusted: bool = False
+    updated_at: Optional[str] = None
+
+
+class MssqlConfigUpdateRequest(BaseModel):
+    server: Optional[str] = None
+    database: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    use_trusted: Optional[bool] = None
+
+
+class MssqlTestResponse(BaseModel):
+    ok: bool
+    detail: str
+
+
 @dataclass
 class AssistantGeneratedFile:
     file_name: str
@@ -136,16 +173,189 @@ class MessageResponse(BaseModel):
 
 class MessageCreateResponse(BaseModel):
     message: MessageResponse
-    simulated_reply: Optional[MessageResponse] = None
+    reply: Optional[MessageResponse] = None
 
 
 BASE_DIR = Path(__file__).resolve().parent
+APP_CONFIG_PATH = Path(os.environ.get("APP_CONFIG_PATH", BASE_DIR.parent / "config.toml"))
 UPLOAD_ROOT = Path(os.environ.get("CHAT_UPLOAD_ROOT", BASE_DIR / "chat_uploads"))
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 app.mount("/chat_uploads", StaticFiles(directory=str(UPLOAD_ROOT)), name="chat_uploads")
+RAG_UPLOAD_ROOT = Path(os.environ.get("RAG_UPLOAD_ROOT", BASE_DIR / "rag_files"))
+RAG_UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 SIMULATED_REPLY_DELAY = float(os.environ.get("SIMULATED_REPLY_DELAY", "1.5"))
 DOWNLOAD_LINKS_PLACEHOLDER = "__DOWNLOAD_LINKS__"
-pending_generations: Dict[int, asyncio.Task] = {}
+pending_generations: Dict[int, Dict[str, object]] = {}
+
+
+def _load_app_config() -> dict[str, Any]:
+    defaults: dict[str, Any] = {
+        "branding": {
+            "title": "SimpleChat",
+            "brand_icon": "ph-chat-teardrop-text",
+            "empty_state_icon": "ph-sparkle",
+            "login_subtitle": "Your premium AI assistant",
+        },
+        "theme": {
+            "profile": "tech",
+            "bg_primary": "#0f172a",
+            "bg_secondary": "#1e293b",
+            "bg_surface": "#334155",
+            "bg_input": "rgba(30, 41, 59, 0.7)",
+            "text_primary": "#f8fafc",
+            "text_secondary": "#94a3b8",
+            "text_tertiary": "#64748b",
+            "primary": "#8b5cf6",
+            "primary_hover": "#7c3aed",
+            "accent": "#06b6d4",
+            "gradient_primary": "linear-gradient(135deg, #8b5cf6 0%, #06b6d4 100%)",
+            "success": "#10b981",
+            "warning": "#f59e0b",
+            "error": "#ef4444",
+            "border_subtle": "rgba(148, 163, 184, 0.1)",
+            "border_focus": "rgba(139, 92, 246, 0.5)",
+        },
+        "theme_presets": {
+            "tech": {
+                "bg_primary": "#0f172a",
+                "bg_secondary": "#1e293b",
+                "bg_surface": "#334155",
+                "bg_input": "rgba(30, 41, 59, 0.7)",
+                "text_primary": "#f8fafc",
+                "text_secondary": "#94a3b8",
+                "text_tertiary": "#64748b",
+                "primary": "#8b5cf6",
+                "primary_hover": "#7c3aed",
+                "accent": "#06b6d4",
+                "gradient_primary": "linear-gradient(135deg, #8b5cf6 0%, #06b6d4 100%)",
+                "success": "#10b981",
+                "warning": "#f59e0b",
+                "error": "#ef4444",
+                "border_subtle": "rgba(148, 163, 184, 0.1)",
+                "border_focus": "rgba(139, 92, 246, 0.5)",
+            },
+            "warm": {
+                "bg_primary": "#1b1410",
+                "bg_secondary": "#2a1f19",
+                "bg_surface": "#3a2d26",
+                "bg_input": "rgba(58, 45, 38, 0.7)",
+                "text_primary": "#fdf6f1",
+                "text_secondary": "#d6c1b6",
+                "text_tertiary": "#b59d91",
+                "primary": "#f97316",
+                "primary_hover": "#ea580c",
+                "accent": "#facc15",
+                "gradient_primary": "linear-gradient(135deg, #f97316 0%, #facc15 100%)",
+                "success": "#22c55e",
+                "warning": "#f59e0b",
+                "error": "#ef4444",
+                "border_subtle": "rgba(214, 193, 182, 0.18)",
+                "border_focus": "rgba(249, 115, 22, 0.5)",
+            },
+            "minimal": {
+                "bg_primary": "#f8fafc",
+                "bg_secondary": "#eef2f6",
+                "bg_surface": "#e2e8f0",
+                "bg_input": "rgba(226, 232, 240, 0.8)",
+                "text_primary": "#0f172a",
+                "text_secondary": "#475569",
+                "text_tertiary": "#64748b",
+                "primary": "#0f172a",
+                "primary_hover": "#111827",
+                "accent": "#0ea5e9",
+                "gradient_primary": "linear-gradient(135deg, #0f172a 0%, #0ea5e9 100%)",
+                "success": "#16a34a",
+                "warning": "#d97706",
+                "error": "#dc2626",
+                "border_subtle": "rgba(71, 85, 105, 0.2)",
+                "border_focus": "rgba(14, 165, 233, 0.5)",
+            },
+        },
+    }
+    if not APP_CONFIG_PATH.exists():
+        return defaults
+    try:
+        try:
+            import tomllib  # type: ignore
+            with APP_CONFIG_PATH.open("rb") as handle:
+                parsed = tomllib.load(handle)
+        except ModuleNotFoundError:
+            def _simple_toml_load(path: Path) -> dict[str, Any]:
+                data: dict[str, Any] = {}
+                current = data
+                with path.open("r", encoding="utf-8") as handle:
+                    for raw_line in handle:
+                        line = raw_line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if line.startswith("[") and line.endswith("]"):
+                            section_path = line[1:-1].strip().split(".")
+                            current = data
+                            for part in section_path:
+                                current = current.setdefault(part, {})
+                            continue
+                        if "=" not in line:
+                            continue
+                        key, value = line.split("=", 1)
+                        key = key.strip()
+                        value = value.strip()
+                        if value.startswith("#"):
+                            continue
+                        if (value.startswith('"') and value.endswith('"')) or (
+                            value.startswith("'") and value.endswith("'")
+                        ):
+                            value = value[1:-1]
+                        current[key] = value
+                return data
+
+            parsed = _simple_toml_load(APP_CONFIG_PATH)
+        if not isinstance(parsed, dict):
+            return defaults
+        for section in ("branding", "theme", "theme_presets"):
+            section_data = parsed.get(section)
+            if isinstance(section_data, dict):
+                defaults[section].update(section_data)
+        theme_profile = defaults["theme"].get("profile")
+        presets = defaults.get("theme_presets", {})
+        if isinstance(theme_profile, str) and theme_profile in presets:
+            defaults["theme"].update(presets[theme_profile])
+        return defaults
+    except Exception:
+        return defaults
+
+
+@app.get("/api/config")
+def get_app_config() -> dict[str, Any]:
+    return _load_app_config()
+
+
+def _run_reply_worker(
+    content: str,
+    files_payload: List[dict],
+    conversation_id: int,
+    parent_message_id: Optional[int],
+    owner_user_id: int,
+    owner_display_name: Optional[str],
+    result_queue: multiprocessing.Queue,
+) -> None:
+    try:
+        conn = get_connection()
+        try:
+            files = [MessageFileResponse(**item) for item in files_payload]
+            reply_payload = build_reply(
+                content,
+                files,
+                conn,
+                conversation_id,
+                parent_message_id,
+                owner_user_id,
+                owner_display_name,
+            )
+            result_queue.put(("ok", reply_payload))
+        finally:
+            conn.close()
+    except Exception:
+        result_queue.put(("error", traceback.format_exc()))
 
 
 def normalize_email(email: str) -> str:
@@ -234,10 +444,75 @@ def row_to_message(row: sqlite3.Row, files: Optional[List[MessageFileResponse]] 
     )
 
 
+def row_to_rag_file(row: sqlite3.Row) -> RagFileResponse:
+    return RagFileResponse(
+        id=row["id"],
+        file_name=row["file_name"],
+        file_path=row["file_path"],
+        mime_type=row["mime_type"],
+        size_bytes=row["size_bytes"],
+        uploaded_by=row["uploaded_by"],
+        created_at=row["created_at"],
+    )
+
+
+def load_mssql_config(db: sqlite3.Connection) -> MssqlConfigResponse:
+    row = db.execute("SELECT * FROM mssql_config WHERE id = 1").fetchone()
+    if not row:
+        return MssqlConfigResponse(
+            server=os.environ.get("MSSQL_SERVER"),
+            database=os.environ.get("MSSQL_DATABASE"),
+            username=os.environ.get("MSSQL_USER"),
+            password=os.environ.get("MSSQL_PASSWORD"),
+            use_trusted=os.environ.get("MSSQL_USE_TRUSTED", "false").lower() in ("1", "true", "yes"),
+            updated_at=None,
+        )
+    return MssqlConfigResponse(
+        server=row["server"],
+        database=row["database"],
+        username=row["username"],
+        password=row["password"],
+        use_trusted=bool(row["use_trusted"]),
+        updated_at=row["updated_at"],
+    )
+
+
+def build_mssql_conn_str(
+    server: str,
+    database: str,
+    username: Optional[str],
+    password: Optional[str],
+    use_trusted: bool,
+) -> str:
+    if use_trusted:
+        return (
+            f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+            f"SERVER={server};"
+            f"DATABASE={database};"
+            "Trusted_Connection=yes;"
+            "Encrypt=no;"
+        )
+    return (
+        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+        f"SERVER={server};"
+        f"DATABASE={database};"
+        f"UID={username or ''};"
+        f"PWD={password or ''};"
+        "Encrypt=no;"
+    )
+
+
 def get_message_row_or_404(message_id: int, db: sqlite3.Connection) -> sqlite3.Row:
     row = db.execute("SELECT * FROM message WHERE id = ?", (message_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    return row
+
+
+def get_rag_file_row_or_404(file_id: int, db: sqlite3.Connection) -> sqlite3.Row:
+    row = db.execute("SELECT * FROM rag_file WHERE id = ?", (file_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="RAG file not found")
     return row
 
 
@@ -257,6 +532,28 @@ def get_conversation_or_404(conversation_id: int, db: sqlite3.Connection) -> sql
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return row
+
+
+ALLOWED_RAG_EXTENSIONS = {".pdf", ".doc", ".docx", ".md", ".csv", ".txt", ".xls", ".xlsx"}
+
+
+async def persist_rag_file(upload_file: UploadFile) -> tuple[str, str, int, Optional[str]]:
+    safe_name = Path(upload_file.filename or "upload").name
+    suffix = Path(safe_name).suffix.lower()
+    if suffix not in ALLOWED_RAG_EXTENSIONS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported file type")
+    unique_name = f"{uuid4().hex}_{safe_name}"
+    dest_path = RAG_UPLOAD_ROOT / unique_name
+    size = 0
+    with dest_path.open("wb") as buffer:
+        while True:
+            chunk = await upload_file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            buffer.write(chunk)
+    await upload_file.close()
+    return safe_name, dest_path.relative_to(RAG_UPLOAD_ROOT).as_posix(), size, upload_file.content_type
 
 
 def ensure_default_conversation(db: sqlite3.Connection, user_id: int) -> sqlite3.Row:
@@ -295,10 +592,17 @@ def touch_conversation(db: sqlite3.Connection, conversation_id: int) -> None:
     )
 
 
+def make_unique_name(file_name: str) -> str:
+    path = Path(file_name)
+    suffix = uuid4().hex[:8]
+    stem = path.stem or "upload"
+    return f"{stem}_{suffix}{path.suffix}"
+
+
 async def persist_upload_file(upload_file: UploadFile, user_id: int, display_name: Optional[str] = None) -> tuple[str, str, int]:
     dest_dir = ensure_user_upload_dir(user_id, display_name)
     safe_name = Path(upload_file.filename or "upload").name
-    unique_name = f"{uuid4().hex}_{safe_name}"
+    unique_name = make_unique_name(safe_name)
     dest_path = dest_dir / unique_name
     size = 0
     with dest_path.open("wb") as buffer:
@@ -327,7 +631,7 @@ def persist_assistant_files(
     for generated_file in generated_files:
         raw_name = generated_file.file_name or "assistant_file"
         safe_name = Path(raw_name).name
-        unique_name = f"{uuid4().hex}_{safe_name}"
+        unique_name = make_unique_name(safe_name)
         dest_path = dest_dir / unique_name
         if generated_file.source_path:
             source_path = Path(generated_file.source_path)
@@ -359,14 +663,16 @@ def persist_assistant_files(
     return saved_files
 
 
-def build_simulated_reply(
+def build_reply(
     content: str,
     files: List[MessageFileResponse],
     db: sqlite3.Connection,
     conversation_id: int,
     exclude_message_id: Optional[int] = None,
+    owner_user_id: Optional[int] = None,
+    owner_display_name: Optional[str] = None,
 ) -> Union[str, tuple[str, List[AssistantGeneratedFile]]]:
-    """Placeholder assistant response until an LLM is connected."""
+    """Generate assistant response via LLM."""
     text = content.strip() if content and content.strip() else "(no text provided)"
     history_rows = db.execute(
         """
@@ -388,23 +694,67 @@ def build_simulated_reply(
         speaker = "使用者" if row["sender_type"] == "user" else "AI"
         history_lines.append(f"{speaker}: {content_text}")
     history_block = "\n".join(history_lines)
-    prompt = f"# 歷史對話紀錄\n{history_block}\n\n# 使用者提問\n{text}"
-    lines = [f"收到的文字訊息: {text}"]
-        
+    user_upload_dir = None
+    if owner_user_id is not None:
+        upload_dir_path = ensure_user_upload_dir(owner_user_id, owner_display_name)
+        user_upload_dir = (Path("backend") / upload_dir_path.relative_to(BASE_DIR)).as_posix()
+    display_name = owner_display_name or "未提供"
+    prompt = f'''
+    # 歷史對話紀錄
+    {history_block}
+    
+    # 使用者提問
+    {text}
+    
+    # 注意事項
+    1. 現在是{datetime.now():%Y年%m月%d日}，請根據上述歷史對話紀錄與使用者提問，產生適當的回覆內容。
+    2. 現在的使用者為 id={owner_user_id}, name={display_name}，若使用 exec_python_code 產生檔案，請輸出到 {user_upload_dir}。
+    3. 如果有多項資訊，可以用表格或是條列式呈現。
+    '''
+    
+    
     print("start akasha")
     print(prompt)
-    lines = agent(question=prompt)
+    result = agent(question=prompt)
     print("end akasha")
-    
-    # 開頭為 [THOUGTH]: / [ACTION]: / [OBSERVATION]: / [FINAL ANSWER]: 都濾除掉
-    lines_filtered = []
-    for line in lines:
-        if line.startswith("\n[THOUGHT]:") or line.startswith("\n[ACTION]:") or line.startswith("\n[OBSERVATION]:") or line.startswith("\n[FINAL ANSWER]:"):
+
+    if isinstance(result, str):
+        response_text = result
+    elif isinstance(result, (list, tuple)):
+        response_text = "\n".join(str(item) for item in result)
+    else:
+        try:
+            response_text = "\n".join(str(item) for item in result)
+        except TypeError:
+            response_text = str(result)
+
+    try:
+        parsed = json.loads(response_text)
+        if isinstance(parsed, dict) and "action" in parsed and "action_input" in parsed:
+            action = str(parsed.get("action", "")).lower()
+            if action in {"answer", "final", "final_answer", "final answer"}:
+                action_input = parsed.get("action_input", "")
+                if isinstance(action_input, (dict, list)):
+                    response_text = json.dumps(action_input, ensure_ascii=False)
+                else:
+                    response_text = str(action_input)
+            else:
+                response_text = "系統尚未產生最終答案，已完成工具查詢，請稍後再試。"
+        elif isinstance(parsed, (dict, list)):
+            response_text = json.dumps(parsed, ensure_ascii=False)
+    except json.JSONDecodeError:
+        pass
+
+    # 開頭為 [THOUGHT]: / [ACTION]: / [OBSERVATION]: / [FINAL ANSWER]: 都濾除掉
+    lines = []
+    for line in response_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[THOUGHT]:") or stripped.startswith("[ACTION]:") or stripped.startswith("[OBSERVATION]:") or stripped.startswith("[FINAL ANSWER]:"):
             continue
-        else:
-            lines_filtered.append(line)
-        
-    lines = lines_filtered
+        lines.append(line)
+
+    if not any(line.strip() for line in lines):
+        lines = [response_text]
         
     # if files:
     #     lines.append("收到的檔案訊息:")
@@ -433,10 +783,10 @@ def build_simulated_reply(
     return "\n".join(lines)
 
 
-# def build_simulated_reply(
+# def build_reply(
 #     content: str, files: List[MessageFileResponse]
 # ) -> Union[str, tuple[str, List[AssistantGeneratedFile]]]:
-#     """Placeholder assistant response until an LLM is connected."""
+#     """Generate assistant response via LLM."""
 #     text = content.strip() if content and content.strip() else "(no text provided)"
 #     lines = [f"收到的文字訊息: {text}"]
 #     if files:
@@ -476,7 +826,7 @@ def schedule_assistant_reply(
     task = loop.create_task(
         run_assistant_reply(message_id, conversation_id, content, files, owner_user_id, owner_display_name)
     )
-    pending_generations[message_id] = task
+    pending_generations[message_id] = {"task": task, "process": None}
 
 
 async def run_assistant_reply(
@@ -487,6 +837,7 @@ async def run_assistant_reply(
     owner_user_id: int,
     owner_display_name: Optional[str],
 ) -> None:
+    process: Optional[multiprocessing.Process] = None
     try:
         await asyncio.sleep(SIMULATED_REPLY_DELAY)
         conn = get_connection()
@@ -496,7 +847,64 @@ async def run_assistant_reply(
                 (message_id,),
             ).fetchone()
             parent_message_id = parent_row["parent_message_id"] if parent_row else None
-            reply_payload = build_simulated_reply(content, files, conn, conversation_id, parent_message_id)
+        finally:
+            conn.close()
+        ctx = multiprocessing.get_context("spawn")
+        result_queue: multiprocessing.Queue = ctx.Queue()
+        files_payload = [
+            file.dict() if hasattr(file, "dict") else dict(file)  # type: ignore[arg-type]
+            for file in files
+        ]
+        process = ctx.Process(
+            target=_run_reply_worker,
+            args=(
+                content,
+                files_payload,
+                conversation_id,
+                parent_message_id,
+                owner_user_id,
+                owner_display_name,
+                result_queue,
+            ),
+        )
+        process.start()
+        pending_entry = pending_generations.get(message_id)
+        if pending_entry is not None:
+            pending_entry["process"] = process
+
+        reply_payload = None
+        while True:
+            if process.exitcode is not None:
+                try:
+                    status_label, payload = result_queue.get_nowait()
+                    if status_label == "ok":
+                        reply_payload = payload
+                    else:
+                        raise RuntimeError(payload)
+                except py_queue.Empty:
+                    raise RuntimeError("Assistant worker exited without a result")
+                break
+            try:
+                status_label, payload = result_queue.get_nowait()
+                if status_label == "ok":
+                    reply_payload = payload
+                else:
+                    raise RuntimeError(payload)
+                break
+            except py_queue.Empty:
+                await asyncio.sleep(0.1)
+
+        if reply_payload is None:
+            raise RuntimeError("Assistant worker returned no payload")
+
+        conn = get_connection()
+        try:
+            status_row = conn.execute(
+                "SELECT status FROM message WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+            if not status_row or status_row["status"] != "pending":
+                return
             if isinstance(reply_payload, tuple):
                 reply_text, generated_files = reply_payload
             else:
@@ -521,13 +929,25 @@ async def run_assistant_reply(
             conn.close()
     except asyncio.CancelledError:
         raise
+    except Exception as exc:
+        print(f"Assistant reply failed: {exc}")
     finally:
+        if process is not None and process.is_alive():
+            process.terminate()
+            process.join(timeout=1.0)
         pending_generations.pop(message_id, None)
 
 
 def cancel_pending_generation(message_id: int) -> None:
-    task = pending_generations.pop(message_id, None)
-    if task:
+    entry = pending_generations.pop(message_id, None)
+    if not entry:
+        return
+    process = entry.get("process")
+    task = entry.get("task")
+    if isinstance(process, multiprocessing.Process) and process.is_alive():
+        process.terminate()
+        process.join(timeout=1.0)
+    if isinstance(task, asyncio.Task):
         task.cancel()
 
 
@@ -689,6 +1109,153 @@ def delete_user(
     db.execute("DELETE FROM user WHERE id = ?", (user_id,))
     db.commit()
     return DeleteResponse(detail="User deleted")
+
+
+@app.get("/api/admin/rag-files", response_model=List[RagFileResponse])
+def list_rag_files(
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> List[RagFileResponse]:
+    require_admin(current_user)
+    rows = db.execute("SELECT * FROM rag_file ORDER BY created_at DESC").fetchall()
+    return [row_to_rag_file(row) for row in rows]
+
+
+@app.post("/api/admin/rag-files", response_model=List[RagFileResponse], status_code=status.HTTP_201_CREATED)
+async def upload_rag_files(
+    request: Request,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> List[RagFileResponse]:
+    require_admin(current_user)
+    form = await request.form()
+    raw_files = form.getlist("files") if hasattr(form, "getlist") else []
+    upload_list: List[UploadFile] = [file for file in raw_files if getattr(file, "filename", None)]
+    if not upload_list:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files uploaded")
+    saved_rows: List[RagFileResponse] = []
+    for upload_file in upload_list:
+        original_name, relative_path, size, mime_type = await persist_rag_file(upload_file)
+        cursor = db.execute(
+            "INSERT INTO rag_file (file_name, file_path, mime_type, size_bytes, uploaded_by) VALUES (?, ?, ?, ?, ?)",
+            (original_name, relative_path, mime_type, size, current_user.id),
+        )
+        row = get_rag_file_row_or_404(cursor.lastrowid, db)
+        saved_rows.append(row_to_rag_file(row))
+    db.commit()
+    return saved_rows
+
+
+@app.get("/api/admin/rag-files/{file_id}/download")
+def download_rag_file(
+    file_id: int,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    require_admin(current_user)
+    row = get_rag_file_row_or_404(file_id, db)
+    file_path = RAG_UPLOAD_ROOT / row["file_path"]
+    if not file_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found on disk")
+    return FileResponse(path=str(file_path), filename=row["file_name"])
+
+
+@app.delete("/api/admin/rag-files/{file_id}", response_model=DeleteResponse)
+def delete_rag_file(
+    file_id: int,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> DeleteResponse:
+    require_admin(current_user)
+    row = get_rag_file_row_or_404(file_id, db)
+    file_path = RAG_UPLOAD_ROOT / row["file_path"]
+    db.execute("DELETE FROM rag_file WHERE id = ?", (file_id,))
+    db.commit()
+    if file_path.exists():
+        file_path.unlink()
+    return DeleteResponse(detail="RAG file deleted")
+
+
+@app.get("/api/admin/mssql-config", response_model=MssqlConfigResponse)
+def get_mssql_config(
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> MssqlConfigResponse:
+    require_admin(current_user)
+    return load_mssql_config(db)
+
+
+@app.put("/api/admin/mssql-config", response_model=MssqlConfigResponse)
+def update_mssql_config(
+    payload: MssqlConfigUpdateRequest,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> MssqlConfigResponse:
+    require_admin(current_user)
+    existing = db.execute("SELECT * FROM mssql_config WHERE id = 1").fetchone()
+    updates = []
+    params: List[object] = []
+    fields = {
+        "server": payload.server,
+        "database": payload.database,
+        "username": payload.username,
+        "password": payload.password,
+        "use_trusted": payload.use_trusted,
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if key == "use_trusted":
+            value = int(bool(value))
+        updates.append(f"{key} = ?")
+        params.append(value)
+    if existing is None:
+        db.execute(
+            "INSERT INTO mssql_config (id, server, database, username, password, use_trusted) VALUES (1, ?, ?, ?, ?, ?)",
+            (
+                payload.server,
+                payload.database,
+                payload.username,
+                payload.password,
+                int(payload.use_trusted or False),
+            ),
+        )
+    elif updates:
+        params.append(1)
+        db.execute(
+            f"UPDATE mssql_config SET {', '.join(updates)}, updated_at = datetime('now') WHERE id = ?",
+            params,
+        )
+    db.commit()
+    return load_mssql_config(db)
+
+
+@app.post("/api/admin/mssql-config/test", response_model=MssqlTestResponse)
+def test_mssql_config(
+    payload: MssqlConfigUpdateRequest,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> MssqlTestResponse:
+    require_admin(current_user)
+    existing = load_mssql_config(db)
+    server = payload.server or existing.server
+    database = payload.database or existing.database
+    username = payload.username or existing.username
+    password = payload.password or existing.password
+    use_trusted = payload.use_trusted if payload.use_trusted is not None else existing.use_trusted
+    if not server or not database:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Server and database are required.")
+
+    try:
+        import pyodbc
+        conn_str = build_mssql_conn_str(server, database, username, password, bool(use_trusted))
+        with pyodbc.connect(conn_str, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+        return MssqlTestResponse(ok=True, detail="Connection successful.")
+    except Exception as exc:
+        return MssqlTestResponse(ok=False, detail=f"Connection failed: {exc}")
 
 
 @app.get("/api/conversations", response_model=List[ConversationResponse])
@@ -871,7 +1438,7 @@ async def create_message(
 
     touch_conversation(db, conversation_row["id"])
     db.commit()
-    return MessageCreateResponse(message=user_message, simulated_reply=assistant_message)
+    return MessageCreateResponse(message=user_message, reply=assistant_message)
 
 
 @app.get("/api/messages", response_model=List[MessageResponse])

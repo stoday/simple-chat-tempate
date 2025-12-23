@@ -10,6 +10,8 @@ const props = defineProps({
   }
 })
 
+const UPLOAD_BASE = (import.meta.env.VITE_UPLOAD_BASE_URL || 'http://localhost:8000/chat_uploads').replace(/\/\/$/, '')
+
 const md = new MarkdownIt()
 
 const renderedContent = computed(() => {
@@ -35,6 +37,40 @@ const hasVisibleContent = computed(() => {
   return content.length > 0 || hasFiles
 })
 const hidePendingPlaceholder = computed(() => isPendingAssistant.value && !hasVisibleContent.value)
+
+const normalizeUploadUrl = (rawPath) => {
+  if (!rawPath) return null
+  if (/^https?:\/\//i.test(rawPath)) return rawPath
+  let relative = rawPath
+  relative = relative.replace(/^\.?\/*backend\/chat_uploads\//i, '')
+  relative = relative.replace(/^\/?chat_uploads\//i, '')
+  return `${UPLOAD_BASE}/${relative}`.replace(/([^:]\/)\/+/g, '$1')
+}
+
+const imageUrls = computed(() => {
+  const content = props.message.content || ''
+  const matches = []
+  const addMatches = (regex) => {
+    const found = content.match(regex)
+    if (found) matches.push(...found)
+  }
+  addMatches(/(?:\.\/)?backend\/chat_uploads\/[^\s)]+/gi)
+  addMatches(/\/chat_uploads\/[^\s)]+/gi)
+  addMatches(/https?:\/\/[^\s)]+\/chat_uploads\/[^\s)]+/gi)
+
+  const cleaned = matches
+    .map((item) => item.replace(/[),.;]+$/, ''))
+    .map((item) => normalizeUploadUrl(item))
+    .filter((item) => item && /\.(png|jpe?g|gif|webp)$/i.test(item))
+  return Array.from(new Set(cleaned))
+})
+
+const getFileName = (url) => {
+  if (!url) return 'image'
+  const cleaned = url.split('?')[0].split('#')[0]
+  const parts = cleaned.split('/')
+  return parts[parts.length - 1] || 'image'
+}
 
 // 元件級的 container ref，避免使用 document.querySelector 全域選取
 const containerRef = ref(null)
@@ -120,6 +156,27 @@ watch(renderedContent, async () => {
       </div>
       
       <div class="message-content markdown-body" v-html="renderedContent" ref="containerRef"></div>
+      <div v-if="imageUrls.length" class="inline-images">
+        <div v-for="url in imageUrls" :key="url" class="inline-image-card">
+          <img
+            :src="url"
+            :alt="`uploaded image ${url}`"
+            class="inline-image"
+            loading="lazy"
+          />
+          <a
+            :href="url"
+            :download="getFileName(url)"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="inline-image-download"
+            title="Download image"
+          >
+            <i class="ph ph-download-simple"></i>
+            Download
+          </a>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -239,6 +296,44 @@ watch(renderedContent, async () => {
 
 .download-btn:hover {
   background: rgba(139, 92, 246, 0.2);
+}
+
+.inline-images {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.inline-image-card {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+}
+
+.inline-image {
+  max-width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--border-light);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+}
+
+.inline-image-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  text-decoration: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  transition: all var(--transition-fast);
+  font-size: 0.85rem;
+}
+
+.inline-image-download:hover {
+  background: rgba(255, 255, 255, 0.16);
+  transform: translateY(-1px);
 }
 
 /* Markdown Styles */

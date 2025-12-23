@@ -1,10 +1,13 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useAuthStore } from '../stores/auth'
+import { useAppConfigStore } from '../stores/appConfig'
 import { storeToRefs } from 'pinia'
 
 const authStore = useAuthStore()
 const { isLoading, error } = storeToRefs(authStore)
+const appConfigStore = useAppConfigStore()
+const { config } = storeToRefs(appConfigStore)
 
 const email = ref('')
 const password = ref('')
@@ -30,10 +33,10 @@ const handleLogin = async () => {
     <div class="login-card">
       <div class="logo-area">
         <div class="logo-icon-wrapper">
-          <i class="ph ph-chat-teardrop-text logo-icon"></i>
+          <i class="ph logo-icon" :class="config.branding.brand_icon"></i>
         </div>
-        <h1>SimpleChat</h1>
-        <p>Your premium AI assistant</p>
+        <h1>{{ config.branding.title }}</h1>
+        <p>{{ config.branding.login_subtitle }}</p>
       </div>
       
       <form @submit.prevent="handleLogin" class="login-form">

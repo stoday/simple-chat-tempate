@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import List
 import rich
 import traceback
+from .database import get_connection
 
 
 # # 定義一個工具來回傳資料庫表單的總覽資訊
@@ -95,6 +96,31 @@ table_db_content_tool = akasha.create_tool(
 
         
 # 定義一個工具來執行 MSSQL 查詢
+def load_mssql_config_from_db():
+    try:
+        conn = get_connection()
+    except Exception:
+        return None
+    try:
+        row = conn.execute("SELECT * FROM mssql_config WHERE id = 1").fetchone()
+        if not row:
+            return None
+        return {
+            "server": row["server"],
+            "database": row["database"],
+            "username": row["username"],
+            "password": row["password"],
+            "use_trusted": bool(row["use_trusted"]),
+        }
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def execute_sql_query(query):
     import pyodbc
     import pandas as pd
@@ -103,13 +129,16 @@ def execute_sql_query(query):
     # 連線 SQL Server
     # 設定連線資訊
     # server = "localhost,1433"   # SQL Server Docker container port 映射到本機
-    server = os.environ.get('MSSQL_SERVER', 'localhost,1433')
-    database = os.environ.get('MSSQL_DATABASE', 'master')
-    username = os.environ.get('MSSQL_USER', 'sa')
-    password = os.environ.get('MSSQL_PASSWORD', 'Mlops123!')
+    db_config = load_mssql_config_from_db() or {}
+    server = db_config.get("server") or os.environ.get('MSSQL_SERVER', 'localhost,1433')
+    database = db_config.get("database") or os.environ.get('MSSQL_DATABASE', 'master')
+    username = db_config.get("username") or os.environ.get('MSSQL_USER', 'sa')
+    password = db_config.get("password") or os.environ.get('MSSQL_PASSWORD', 'Mlops123!')
 
     # 是否使用 Windows (Trusted) Authentication
-    use_trusted = os.environ.get('MSSQL_USE_TRUSTED', 'false').lower() in ('1', 'true', 'yes')
+    use_trusted = db_config.get("use_trusted")
+    if use_trusted is None:
+        use_trusted = os.environ.get('MSSQL_USE_TRUSTED', 'false').lower() in ('1', 'true', 'yes')
 
     # Normalize escaped characters often introduced by JSON/LLM outputs
     if isinstance(query, str):
@@ -242,16 +271,44 @@ check_rules_tool = akasha.create_tool(
 )
 
 # 定義一個工具來執行 Python 代碼
-def exec_python_code(code):
+def exec_python_code(code, output_path: str = "./backend/chat_uploads/"):
     rich.print("Executing exec_python_code tool...")
     def _exec(target_code: str):
-        local_vars = {}
-        exec(target_code, {}, local_vars)
-        return str(local_vars)  # 返回執行後的本地變量字典
+        exec_env = {}
+        exec(target_code, exec_env, exec_env)
+        exec_env.pop("__builtins__", None)
+        return exec_env  # 返回執行後的本地變量字典
+
+    def _apply_timestamp_to_file_path(exec_env: dict):
+        file_path = exec_env.get("file_path")
+        if not isinstance(file_path, str) or not file_path.strip():
+            return exec_env
+        path = Path(file_path)
+        if not path.exists() and not path.is_absolute():
+            output_dir = Path(output_path)
+            candidate = output_dir / path
+            if candidate.exists():
+                path = candidate
+        if not path.exists():
+            return exec_env
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        candidate = path.with_name(f"{path.stem}_{timestamp}{path.suffix}")
+        counter = 1
+        while candidate.exists():
+            candidate = path.with_name(
+                f"{path.stem}_{timestamp}_{counter}{path.suffix}"
+            )
+            counter += 1
+        path.rename(candidate)
+        exec_env["file_path"] = str(candidate)
+        return exec_env
 
     try:
         # 先直接嘗試執行原始字串
-        return _exec(code)
+        exec_env = _exec(code)
+        exec_env = _apply_timestamp_to_file_path(exec_env)
+        return str(exec_env)
     except SyntaxError:
         # 若因為跳脫字元造成語法錯誤，嘗試將行分隔的 \\n 替換成真正換行（不動字串內的 '\n' 常值）
         if isinstance(code, str):
@@ -260,7 +317,9 @@ def exec_python_code(code):
             fixed = re.sub(r"\\n(?=[ \t]*[^\s])", "\n", code)
             fixed = fixed.replace("\\t", "\t")
             try:
-                return _exec(fixed)
+                exec_env = _exec(fixed)
+                exec_env = _apply_timestamp_to_file_path(exec_env)
+                return str(exec_env)
             except Exception as e:
                 print(traceback.format_exc())
                 return f"執行 Python 代碼時發生錯誤: {e}"
@@ -271,9 +330,21 @@ def exec_python_code(code):
 exec_python_tool = akasha.create_tool(
     tool_name="exec_python_code",
     tool_description="""
-    這是一個執行 Python 代碼的工具，可用來處理資料或進行計算。輸入參數 code 為「可直接執行」的 Python 代碼字串，請務必：
+    #工具說明
+    這是一個執行 Python 代碼的工具，可用來處理資料或進行計算。需要輸入參數有
+    1. code 為「可直接執行」的 Python 代碼字串，請務必：
+    2. output_path 為執行後若有產生檔案，存放的目錄路徑，預設為 ./backend/chat_uploads/ 。
+    
+    # 注意事項
     1) 產生完整可執行程式，包含必要的 import。
+    1.1) code 必須是單一字串；請用 \\n 表示換行，避免直接輸出多行或混用不一致的換行格式，導致無法執行。
+    1.2) 請勿在字串常值中插入實際換行（例如標題文字被拆成兩行），也不要在行尾使用反斜線 \\ 做換行續行。
+    1.3) 所有字串常值請維持單行（若需要多行文字，請用 \\n 組成字串內容）。
     2) 將重點計算結果存成變數 result，並使用 print(result) 輸出，避免僅有回傳值無輸出。
+    3) 如果有產生檔案結果，請將檔案輸出到 ./backend/chat_uploads/ 資料夾中，同時將檔案路徑也存成變數 file_path，並使用 print(file_path) 輸出。
+    4) 請避免使用需要互動輸入的程式碼，例如 input() 函式。
+    5) 請避免使用無限迴圈或長時間運算的程式碼。
+    6) 請避免使用會修改系統環境的程式碼，例如更改系統設定或安裝套件。
     範例：
     - code = "result = 1 + 1\\nprint(result)"
     - code = "import math\\nresult = math.sqrt(16)\\nprint(result)"
@@ -426,16 +497,17 @@ agent = akasha.agents(
            check_rules_tool,
            exec_python_tool,
            google_search_tool,
-           # documents_rag_tool,
            at.saveJSON_tool()
            ],
+    # model='gemini:gemini-3-flash-preview',
     model='gemini:gemini-2.5-flash',
     # model='openai:gpt-4o',
     temperature=1.0,
     language='zh',
     verbose=True,
+    keep_logs=True,
     max_input_tokens=1048576,
     max_output_tokens=8192,
-    max_round=3,
-    stream=True,
+    max_round=10,
+    stream=False,
 )

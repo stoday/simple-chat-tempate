@@ -1,8 +1,9 @@
 <script setup>
-import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useChatStore } from '../stores/chat'
 import { useAuthStore } from '../stores/auth'
+import { useAppConfigStore } from '../stores/appConfig'
 import ChatMessage from '../components/chat/ChatMessage.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import SidebarItem from '../components/layout/SidebarItem.vue'
@@ -10,13 +11,18 @@ import SidebarItem from '../components/layout/SidebarItem.vue'
 // Stores
 const chatStore = useChatStore()
 const authStore = useAuthStore()
+const appConfigStore = useAppConfigStore()
 
 const { conversations, currentMessages, isTyping, hasPendingAssistant, isUploading, uploadProgress, activeChatId } = storeToRefs(chatStore)
 const { user } = storeToRefs(authStore)
+const { config } = storeToRefs(appConfigStore)
 
 const messagesContainer = ref(null)
 const isSidebarCollapsed = ref(false) // false = expanded (default open)
 const chatInputRef = ref(null)
+const showEmptyState = computed(() => {
+  return !currentMessages.value.length && !isTyping.value && !hasPendingAssistant.value
+})
 
 const scrollToBottom = async () => {
   await nextTick()
@@ -202,8 +208,8 @@ const handleReconnect = async () => {
     <aside class="sidebar" :class="{ 'is-collapsed': isSidebarCollapsed }">
       <div class="sidebar-header">
         <div class="brand">
-          <i class="ph ph-chat-teardrop-text"></i>
-          <span v-if="!isSidebarCollapsed">SimpleChat</span>
+          <i class="ph" :class="config.branding.brand_icon"></i>
+          <span v-if="!isSidebarCollapsed">{{ config.branding.title }}</span>
         </div>
         <div style="display:flex; gap:8px; align-items:center">
           <button class="icon-btn new-chat-btn" @click="handleNewChat" title="New Chat">
@@ -252,6 +258,12 @@ const handleReconnect = async () => {
     <!-- Main Content -->
     <main class="main-content">
       <div class="messages-container" ref="messagesContainer">
+        <div v-if="showEmptyState" class="empty-state">
+          <div class="empty-orb"></div>
+          <div class="empty-icon">
+            <i class="ph" :class="config.branding.empty_state_icon"></i>
+          </div>
+        </div>
         <ChatMessage 
           v-for="msg in currentMessages" 
           :key="msg.id" 
@@ -504,6 +516,45 @@ const handleReconnect = async () => {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  position: relative;
+}
+
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0.75;
+}
+
+.empty-orb {
+  width: min(48vw, 420px);
+  height: min(48vw, 420px);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(125, 211, 252, 0.25), transparent 60%),
+    radial-gradient(circle at 70% 70%, rgba(167, 243, 208, 0.22), transparent 55%),
+    radial-gradient(circle at 50% 50%, rgba(148, 163, 184, 0.12), rgba(15, 23, 42, 0.05) 70%);
+  filter: blur(1px);
+  position: absolute;
+}
+
+.empty-icon {
+  width: min(18vw, 140px);
+  height: min(18vw, 140px);
+  border-radius: 32%;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  display: grid;
+  place-items: center;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 28px 60px rgba(15, 23, 42, 0.35);
+}
+
+.empty-icon i {
+  font-size: min(11vw, 72px);
+  color: rgba(226, 232, 240, 0.45);
 }
 
 .input-area {

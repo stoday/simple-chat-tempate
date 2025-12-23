@@ -1,5 +1,12 @@
 <script setup>
-// App.vue is now just a shell for Router
+import { onMounted } from 'vue'
+import { useAppConfigStore } from './stores/appConfig'
+
+const appConfigStore = useAppConfigStore()
+
+onMounted(() => {
+  appConfigStore.loadConfig()
+})
 </script>
 
 <template>

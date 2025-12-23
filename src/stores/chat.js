@@ -112,6 +112,13 @@ export const useChatStore = defineStore('chat', () => {
         await loadMessages(conversationId, { includeAssistant: true })
       } catch (err) {
         console.error('Failed to refresh pending messages', err)
+      } finally {
+        if (pendingRefreshTimers.has(conversationId)) return
+        const bucket = messagesMap.value[conversationId] || []
+        const stillPending = bucket.some((msg) => msg.role === 'assistant' && msg.status === 'pending')
+        if (stillPending) {
+          schedulePendingRefresh(conversationId, delay)
+        }
       }
     }, delay)
     pendingRefreshTimers.set(conversationId, timeout)
@@ -384,12 +391,12 @@ export const useChatStore = defineStore('chat', () => {
 
       const appended = []
       if (data?.message) appended.push(formatMessageFromApi(data.message))
-      if (data?.simulated_reply) appended.push(formatMessageFromApi(data.simulated_reply))
+      if (data?.reply) appended.push(formatMessageFromApi(data.reply))
       if (appended.length) {
         const existing = ensureMessageBucket(conversationId)
         setMessagesForConversation(conversationId, [...existing, ...appended])
       }
-      if (data?.simulated_reply?.status === 'pending') {
+      if (data?.reply?.status === 'pending') {
         schedulePendingRefresh(conversationId)
       }
       bumpConversation(conversationId, { updatedAt: new Date().toISOString() })
@@ -428,12 +435,25 @@ export const useChatStore = defineStore('chat', () => {
     const conversationId = activeChatId.value
     const pending = pendingAssistantMessage.value
     if (!conversationId || !pending) return
+    const existing = ensureMessageBucket(conversationId)
+    const cancellationText = pending.content || 'Response cancelled by user.'
+    const updatedMessages = existing.map((msg) => {
+      if (msg.id !== pending.id) return msg
+      return {
+        ...msg,
+        status: 'cancelled',
+        content: cancellationText,
+        stoppedAt: new Date().toISOString()
+      }
+    })
+    setMessagesForConversation(conversationId, updatedMessages)
+    clearPendingRefresh(conversationId)
     try {
       await apiClient.post(`/messages/${pending.id}/stop`)
-      clearPendingRefresh(conversationId)
       await loadMessages(conversationId, { includeAssistant: true })
     } catch (err) {
       error.value = err?.response?.data?.detail || err.message || 'Failed to stop response'
+      await loadMessages(conversationId, { includeAssistant: true })
       throw err
     }
   }
