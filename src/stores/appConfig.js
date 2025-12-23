@@ -8,6 +8,10 @@ const DEFAULT_CONFIG = {
     empty_state_icon: 'ph-sparkle',
     login_subtitle: 'Your premium AI assistant',
   },
+  roles: {
+    allowed: ['admin', 'user'],
+    default_role: 'user',
+  },
   theme: {},
 }
 
@@ -56,6 +60,7 @@ export const useAppConfigStore = defineStore('appConfig', () => {
       if (data && typeof data === 'object') {
         config.value = {
           branding: { ...DEFAULT_CONFIG.branding, ...(data.branding || {}) },
+          roles: { ...DEFAULT_CONFIG.roles, ...(data.roles || {}) },
           theme: { ...(data.theme || {}) },
         }
         applyTheme(config.value.theme)

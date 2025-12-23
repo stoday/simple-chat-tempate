@@ -1,14 +1,22 @@
 <script setup>
 import { reactive, ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { storeToRefs } from 'pinia'
 import apiClient from '../services/api'
 import { useAuthStore } from '../stores/auth'
+import { useAppConfigStore } from '../stores/appConfig'
 
 const router = useRouter()
 const authStore = useAuthStore()
+const appConfigStore = useAppConfigStore()
+const { config } = storeToRefs(appConfigStore)
 
 const isAdmin = computed(() => authStore.user?.role === 'admin')
 const canEditDisplayName = computed(() => isAdmin.value)
+const roleOptions = computed(() => {
+  const roles = config.value?.roles?.allowed
+  return Array.isArray(roles) && roles.length ? roles : ['admin', 'user']
+})
 
 const accountForm = reactive({
   email: '',
@@ -436,8 +444,9 @@ const testMssqlConfig = async () => {
             <td>
               <div v-if="editingUserId === user.id">
                 <select v-model="editForm.role">
-                  <option value="admin">Admin</option>
-                  <option value="user">User</option>
+                  <option v-for="role in roleOptions" :key="role" :value="role">
+                    {{ role }}
+                  </option>
                 </select>
               </div>
               <div v-else>

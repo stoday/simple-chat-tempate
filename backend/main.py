@@ -196,6 +196,10 @@ def _load_app_config() -> dict[str, Any]:
             "empty_state_icon": "ph-sparkle",
             "login_subtitle": "Your premium AI assistant",
         },
+        "roles": {
+            "allowed": ["admin", "user"],
+            "default_role": "user",
+        },
         "theme": {
             "profile": "tech",
             "bg_primary": "#0f172a",
@@ -301,6 +305,23 @@ def _load_app_config() -> dict[str, Any]:
                         value = value.strip()
                         if value.startswith("#"):
                             continue
+                        if value.startswith("[") and value.endswith("]"):
+                            inner = value[1:-1].strip()
+                            if not inner:
+                                current[key] = []
+                                continue
+                            items = []
+                            for part in inner.split(","):
+                                item = part.strip()
+                                if (
+                                    (item.startswith('"') and item.endswith('"'))
+                                    or (item.startswith("'") and item.endswith("'"))
+                                ):
+                                    item = item[1:-1]
+                                if item:
+                                    items.append(item)
+                            current[key] = items
+                            continue
                         if (value.startswith('"') and value.endswith('"')) or (
                             value.startswith("'") and value.endswith("'")
                         ):
@@ -311,7 +332,7 @@ def _load_app_config() -> dict[str, Any]:
             parsed = _simple_toml_load(APP_CONFIG_PATH)
         if not isinstance(parsed, dict):
             return defaults
-        for section in ("branding", "theme", "theme_presets"):
+        for section in ("branding", "roles", "theme", "theme_presets"):
             section_data = parsed.get(section)
             if isinstance(section_data, dict):
                 defaults[section].update(section_data)
@@ -319,6 +340,15 @@ def _load_app_config() -> dict[str, Any]:
         presets = defaults.get("theme_presets", {})
         if isinstance(theme_profile, str) and theme_profile in presets:
             defaults["theme"].update(presets[theme_profile])
+        roles_cfg = defaults.get("roles", {})
+        allowed = roles_cfg.get("allowed")
+        if isinstance(allowed, str):
+            roles_cfg["allowed"] = [r.strip() for r in allowed.split(",") if r.strip()]
+        elif not isinstance(allowed, list):
+            roles_cfg["allowed"] = ["admin", "user"]
+        default_role = roles_cfg.get("default_role")
+        if not isinstance(default_role, str) or default_role not in roles_cfg["allowed"]:
+            roles_cfg["default_role"] = "user"
         return defaults
     except Exception:
         return defaults
@@ -699,6 +729,15 @@ def build_reply(
         upload_dir_path = ensure_user_upload_dir(owner_user_id, owner_display_name)
         user_upload_dir = (Path("backend") / upload_dir_path.relative_to(BASE_DIR)).as_posix()
     display_name = owner_display_name or "未提供"
+    role = "未提供"
+    if owner_user_id is not None:
+        owner_row = db.execute(
+            "SELECT display_name, role FROM user WHERE id = ?",
+            (owner_user_id,),
+        ).fetchone()
+        if owner_row:
+            display_name = owner_row["display_name"] or display_name
+            role = owner_row["role"] or role
     prompt = f'''
     # 歷史對話紀錄
     {history_block}
@@ -708,7 +747,7 @@ def build_reply(
     
     # 注意事項
     1. 現在是{datetime.now():%Y年%m月%d日}，請根據上述歷史對話紀錄與使用者提問，產生適當的回覆內容。
-    2. 現在的使用者為 id={owner_user_id}, name={display_name}，若使用 exec_python_code 產生檔案，請輸出到 {user_upload_dir}。
+    2. 現在的使用者為 id={owner_user_id}, name={display_name}, role={role}，若使用 exec_python_code 產生檔案，請輸出到 {user_upload_dir}。
     3. 如果有多項資訊，可以用表格或是條列式呈現。
     '''
     
@@ -990,7 +1029,15 @@ def register_user(payload: RegisterRequest, db: sqlite3.Connection = Depends(get
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     total_users = db.execute("SELECT COUNT(*) FROM user").fetchone()[0]
-    role = "admin" if total_users == 0 else "user"
+    app_config = _load_app_config()
+    roles_cfg = app_config.get("roles", {}) if isinstance(app_config, dict) else {}
+    allowed_roles = roles_cfg.get("allowed") if isinstance(roles_cfg, dict) else None
+    default_role = roles_cfg.get("default_role") if isinstance(roles_cfg, dict) else None
+    if not isinstance(default_role, str):
+        default_role = "user"
+    if isinstance(allowed_roles, list) and default_role not in allowed_roles:
+        default_role = "user"
+    role = "admin" if total_users == 0 else default_role
     cursor = db.execute(
         "INSERT INTO user (email, password_hash, role, display_name) VALUES (?, ?, ?, ?)",
         (email, hashed, role, payload.display_name),
@@ -1083,6 +1130,11 @@ def update_user(
     if payload.role is not None:
         if current_user.role != "admin":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admins can change roles")
+        app_config = _load_app_config()
+        roles_cfg = app_config.get("roles", {}) if isinstance(app_config, dict) else {}
+        allowed_roles = roles_cfg.get("allowed") if isinstance(roles_cfg, dict) else None
+        if isinstance(allowed_roles, list) and payload.role not in allowed_roles:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role")
         updates.append("role = ?")
         params.append(payload.role)
 

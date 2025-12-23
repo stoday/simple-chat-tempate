@@ -10,6 +10,12 @@ login_subtitle = "Your premium AI assistant"
 # empty_state_icon = "ph-orbit"  # OR "ph-moon-stars", "ph-orbit", "ph-cloud", "ph-cube"
 # login_subtitle = "Your team-ready AI copilot"
 
+[roles]
+# Allowed roles (used by admin settings UI).
+allowed = ["admin", "user", "engineer", "sale", "manager", "pm"]
+# Default role for newly registered users (except the first admin).
+default_role = "user"
+
 [theme]
 # Choose a preset: "tech", "warm", "minimal"
 profile = "warm"
