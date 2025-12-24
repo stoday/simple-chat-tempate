@@ -8,6 +8,9 @@ const DEFAULT_CONFIG = {
     empty_state_icon: 'ph-sparkle',
     login_subtitle: 'Your premium AI assistant',
   },
+  app: {
+    version: '1.0.1',
+  },
   roles: {
     allowed: ['admin', 'user'],
     default_role: 'user',
@@ -59,6 +62,7 @@ export const useAppConfigStore = defineStore('appConfig', () => {
       const data = await response.json()
       if (data && typeof data === 'object') {
         config.value = {
+          app: { ...DEFAULT_CONFIG.app, ...(data.app || {}) },
           branding: { ...DEFAULT_CONFIG.branding, ...(data.branding || {}) },
           roles: { ...DEFAULT_CONFIG.roles, ...(data.roles || {}) },
           theme: { ...(data.theme || {}) },

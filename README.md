@@ -23,21 +23,9 @@
    - `http://localhost:8000/docs` 可直接用 Swagger 測 API。
    - 首次啟動會建立 SQLite DB 與 `chat_uploads/` 目錄。
 
-## 🔌 你要改的 Python 位置（最重要）
-後端已經把「收到使用者訊息 → 產生助手回覆」的流程串好，你只要把 **LLM 回覆**接上就行。
-
-請修改 `backend/main.py` 的 `build_simulated_reply()`：
-
-```python
-def build_simulated_reply(content: str, files: list[MessageFileResponse]) -> str:
-    # 這裡改成你自己的模型/服務呼叫，最後回傳字串即可
-    # files 會包含附件資訊，file.file_path 是相對於 UPLOAD_ROOT 的路徑
-    reply_text = your_llm_call(content, files)
-    return reply_text
-```
-
-目前系統在 `run_assistant_reply()` 內呼叫 `build_simulated_reply()`，並把結果寫回資料庫。  
-如果你想做更進階的處理（例如串流、分段寫入），直接改 `run_assistant_reply()` 即可。
+## 🔌 LLM 串接入口（最重要）
+後端已經把「收到使用者訊息 → 產生助手回覆」的流程串好，目前在 `backend/main.py` 的 `build_reply()` 內呼叫 `akasha` agent。  
+若要改成你自己的模型/服務，請從 `build_reply()` 或 `backend/tools.py` 的 agent 設定著手。
 
 **流程小抄**
 - `POST /api/messages`：收到使用者訊息，建立一筆 `assistant` 的 pending 訊息。
@@ -58,6 +46,15 @@ VITE_API_BASE_URL=http://localhost:8000/api
 VITE_UPLOAD_BASE_URL=http://localhost:8000/chat_uploads
 ```
 打開 `http://localhost:5173/` 即可使用。
+
+## 🎨 品牌與主題設定（config.toml）
+專案根目錄的 `config.toml` 可客製：
+- 標題、品牌圖示、空白狀態圖示
+- 登入頁副標
+- 主題色票與 preset（`tech`/`warm`/`minimal`）
+- 角色清單與預設角色
+
+修改後請重啟後端與前端。
 
 ## 📂 後端目錄速覽
 ```

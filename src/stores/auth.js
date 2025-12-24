@@ -24,8 +24,6 @@ const formatUser = (raw) => {
   }
 }
 
-const FORCE_NEW_CHAT_KEY = 'force_new_chat_on_login'
-
 const AUTH_REQUEST_TIMEOUT_MS = 30000
 const loadStoredUser = () => {
   const stored = safeParse(localStorage.getItem('user'))
@@ -86,7 +84,6 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null
     try {
       await runWithTimeout((signal) => performLoginRequest(email, password, signal))
-      localStorage.setItem(FORCE_NEW_CHAT_KEY, '1')
       router.push('/')
     } catch (err) {
       error.value = err?.response?.data?.detail || err.message || 'Login failed'
@@ -106,7 +103,6 @@ export const useAuthStore = defineStore('auth', () => {
         display_name: displayName
       }, { signal }))
       await runWithTimeout((signal) => performLoginRequest(email, password, signal))
-      localStorage.setItem(FORCE_NEW_CHAT_KEY, '1')
       router.push('/')
     } catch (err) {
       error.value = err?.response?.data?.detail || err.message || 'Registration failed'

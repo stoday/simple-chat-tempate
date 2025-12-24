@@ -78,6 +78,8 @@ const ragLoading = ref(false)
 const ragNotice = ref(null)
 const ragUploading = ref(false)
 const ragDragActive = ref(false)
+const ragIndexing = ref(false)
+const ragIndexStatus = ref({ indexing: false, started_at: null, indexed_files: [] })
 const mssqlNotice = ref(null)
 const mssqlSaving = ref(false)
 const mssqlTesting = ref(false)
@@ -124,6 +126,68 @@ const loadRagFiles = async () => {
   }
 }
 
+const formatIndexTime = (value) => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).format(date)
+}
+
+const getIndexedAt = (fileId) => {
+  const indexed = ragIndexStatus.value?.indexed_files || []
+  const targetId = Number(fileId)
+  const match = indexed.find((item) => Number(item.file_id) === targetId)
+  return match?.indexed_at || null
+}
+
+const loadRagIndexStatus = async () => {
+  if (!isAdmin.value) return
+  try {
+    const { data } = await apiClient.get('/admin/rag-files/index/status')
+    ragIndexStatus.value = {
+      indexing: !!data?.indexing,
+      started_at: data?.started_at || null,
+      indexed_files: Array.isArray(data?.indexed_files) ? data.indexed_files : []
+    }
+  } catch (err) {
+    ragIndexStatus.value = { indexing: false, started_at: null, indexed_files: [] }
+  }
+}
+
+const buildRagIndex = async () => {
+  if (!isAdmin.value) return
+  ragIndexing.value = true
+  ragNotice.value = null
+  const startedAt = new Date().toISOString()
+  ragIndexStatus.value = {
+    indexing: true,
+    started_at: startedAt,
+    indexed_files: ragIndexStatus.value?.indexed_files || []
+  }
+  try {
+    const payload = {
+      file_ids: ragFiles.value.map((file) => file.id),
+      rebuild: false,
+    }
+    const { data } = await apiClient.post('/admin/rag-files/index', payload)
+    ragNotice.value = { type: 'success', text: data?.detail || 'Indexing request accepted.' }
+  } catch (err) {
+    ragNotice.value = { type: 'error', text: err?.response?.data?.detail || 'Failed to build index.' }
+  } finally {
+    ragIndexing.value = false
+    await loadRagIndexStatus()
+  }
+}
+
 const loadMssqlConfig = async () => {
   if (!isAdmin.value) return
   mssqlNotice.value = null
@@ -143,6 +207,7 @@ onMounted(() => {
   if (isAdmin.value) {
     loadUsers()
     loadRagFiles()
+    loadRagIndexStatus()
     loadMssqlConfig()
   }
 })
@@ -153,6 +218,7 @@ watch(isAdmin, (value) => {
   }
   if (value && ragFiles.value.length === 0) {
     loadRagFiles()
+    loadRagIndexStatus()
     loadMssqlConfig()
   }
 })
@@ -455,7 +521,7 @@ const testMssqlConfig = async () => {
             </td>
             <td class="row-actions">
               <div v-if="editingUserId === user.id" class="edit-actions">
-                <input type="password" v-model="editForm.password" placeholder="New password" />
+                <input type="password" v-model="editForm.password" placeholder="Leave blank to keep current password" />
                 <button class="btn btn-primary" type="button" @click="saveUser">
                   Save
                 </button>
@@ -483,14 +549,28 @@ const testMssqlConfig = async () => {
           <h2>RAG File Library</h2>
           <p>Upload knowledge files for retrieval and manage existing assets.</p>
         </div>
-        <button class="btn btn-secondary" @click="loadRagFiles" :disabled="ragLoading">
-          <i class="ph ph-arrows-clockwise"></i>
-          Refresh
-        </button>
+        <div class="section-actions">
+          <button
+            class="btn btn-primary"
+            @click="buildRagIndex"
+            :disabled="ragLoading || ragUploading || ragIndexing || !ragFiles.length"
+          >
+            <i class="ph ph-graph"></i>
+            {{ ragIndexing ? 'Indexing...' : 'Build Vector Index' }}
+          </button>
+          <button class="btn btn-secondary" @click="loadRagFiles" :disabled="ragLoading">
+            <i class="ph ph-arrows-clockwise"></i>
+            Refresh
+          </button>
+        </div>
       </div>
 
       <p v-if="ragNotice" :class="['status', ragNotice.type]">
         {{ ragNotice.text }}
+      </p>
+      <p class="status info">
+        Index status: {{ ragIndexStatus.indexing ? 'Indexing' : 'Idle' }}
+        <span v-if="ragIndexStatus.started_at">・Started at {{ formatIndexTime(ragIndexStatus.started_at) }}</span>
       </p>
 
       <div
@@ -526,6 +606,7 @@ const testMssqlConfig = async () => {
             <th>File</th>
             <th>Size</th>
             <th>Uploaded</th>
+            <th>Index</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -534,6 +615,12 @@ const testMssqlConfig = async () => {
             <td>{{ file.file_name }}</td>
             <td>{{ formatBytes(file.size_bytes) }}</td>
             <td>{{ file.created_at }}</td>
+            <td>
+              <span v-if="getIndexedAt(file.id)">
+                Success ({{ formatIndexTime(getIndexedAt(file.id)) }})
+              </span>
+              <span v-else>-</span>
+            </td>
             <td>
               <button class="btn btn-ghost" type="button" @click="downloadRagFile(file)">
                 <i class="ph ph-download-simple"></i>
@@ -546,7 +633,7 @@ const testMssqlConfig = async () => {
             </td>
           </tr>
           <tr v-if="!ragFiles.length">
-            <td colspan="4">No files uploaded yet.</td>
+            <td colspan="5">No files uploaded yet.</td>
           </tr>
         </tbody>
       </table>
@@ -720,6 +807,12 @@ select {
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 1rem;
+}
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .users-table {

@@ -86,6 +86,7 @@ const handleLogin = async () => {
         <RouterLink to="/register" class="link">Create account</RouterLink>
       </div>
     </div>
+    <div class="login-version">Version {{ config.app.version }}</div>
   </div>
 </template>
 
@@ -237,5 +238,15 @@ input:focus {
   text-align: center;
   font-size: 0.9rem;
   margin-top: var(--space-2);
+}
+
+.login-version {
+  position: absolute;
+  bottom: var(--space-4);
+  right: var(--space-4);
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+  z-index: 2;
 }
 </style>

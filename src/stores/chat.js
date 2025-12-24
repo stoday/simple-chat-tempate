@@ -39,7 +39,6 @@ const formatConversationFromApi = (conversation) => ({
 })
 
 const CONVERSATION_CACHE_KEY = 'chat_conversations_cache'
-const FORCE_NEW_CHAT_KEY = 'force_new_chat_on_login'
 const OFFLINE_PLACEHOLDER_ID = 'offline-new-chat'
 
 const loadCachedConversations = () => {
@@ -256,13 +255,10 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   const initialize = async () => {
-    const forceNewChat = typeof window !== 'undefined' && localStorage.getItem(FORCE_NEW_CHAT_KEY) === '1'
-    if (forceNewChat) {
-      localStorage.removeItem(FORCE_NEW_CHAT_KEY)
+    await loadConversations()
+    const latest = conversations.value[0]
+    if (latest && latest.messageCount > 0) {
       await createNewChat()
-      await loadConversations()
-    } else {
-      await loadConversations()
     }
     if (activeChatId.value) {
       await loadMessages(activeChatId.value, { includeAssistant: true })

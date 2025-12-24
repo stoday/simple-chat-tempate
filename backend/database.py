@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS rag_file (
     file_path TEXT NOT NULL,
     mime_type TEXT,
     size_bytes INTEGER,
+    summary TEXT,
+    summary_updated_at TEXT,
     uploaded_by INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY(uploaded_by) REFERENCES user(id) ON DELETE SET NULL
@@ -96,6 +98,7 @@ def init_db() -> None:
         conn.execute(RAG_FILE_TABLE_SQL)
         conn.execute(MSSQL_CONFIG_TABLE_SQL)
         ensure_message_columns(conn)
+        ensure_rag_file_columns(conn)
         conn.commit()
 
 
@@ -110,6 +113,15 @@ def ensure_message_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE message ADD COLUMN parent_message_id INTEGER")
     if "stopped_at" not in columns:
         conn.execute("ALTER TABLE message ADD COLUMN stopped_at TEXT")
+
+
+def ensure_rag_file_columns(conn: sqlite3.Connection) -> None:
+    info = conn.execute("PRAGMA table_info(rag_file)").fetchall()
+    columns = {row[1] for row in info}
+    if "summary" not in columns:
+        conn.execute("ALTER TABLE rag_file ADD COLUMN summary TEXT")
+    if "summary_updated_at" not in columns:
+        conn.execute("ALTER TABLE rag_file ADD COLUMN summary_updated_at TEXT")
 
 
 def get_connection() -> sqlite3.Connection:

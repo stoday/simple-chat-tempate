@@ -4,6 +4,9 @@
 Knowledge
 chat_uploads
 akasha_package
+backend/rag_files/
+chromadb/
+rag_uploads
 
 # Logs
 logs

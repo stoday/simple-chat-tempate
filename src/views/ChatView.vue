@@ -259,7 +259,6 @@ const handleReconnect = async () => {
     <main class="main-content">
       <div class="messages-container" ref="messagesContainer">
         <div v-if="showEmptyState" class="empty-state">
-          <div class="empty-orb"></div>
           <div class="empty-icon">
             <i class="ph" :class="config.branding.empty_state_icon"></i>
           </div>
@@ -295,6 +294,7 @@ const handleReconnect = async () => {
           @stop="handleStopGeneration"
         />
         <p class="disclaimer">AI can make mistakes. Please verify important information.</p>
+        <p class="version-tag">Version {{ config.app.version }}</p>
       </div>
     </main>
 
@@ -528,33 +528,14 @@ const handleReconnect = async () => {
   opacity: 0.75;
 }
 
-.empty-orb {
-  width: min(48vw, 420px);
-  height: min(48vw, 420px);
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 30% 30%, rgba(125, 211, 252, 0.25), transparent 60%),
-    radial-gradient(circle at 70% 70%, rgba(167, 243, 208, 0.22), transparent 55%),
-    radial-gradient(circle at 50% 50%, rgba(148, 163, 184, 0.12), rgba(15, 23, 42, 0.05) 70%);
-  filter: blur(1px);
-  position: absolute;
-}
-
 .empty-icon {
-  width: min(18vw, 140px);
-  height: min(18vw, 140px);
-  border-radius: 32%;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(148, 163, 184, 0.25);
   display: grid;
   place-items: center;
-  backdrop-filter: blur(6px);
-  box-shadow: 0 28px 60px rgba(15, 23, 42, 0.35);
 }
 
 .empty-icon i {
-  font-size: min(11vw, 72px);
-  color: rgba(226, 232, 240, 0.45);
+  font-size: min(16vw, 104px);
+  color: rgba(226, 232, 240, 0.5);
 }
 
 .input-area {
@@ -570,6 +551,14 @@ const handleReconnect = async () => {
   color: var(--text-tertiary);
   margin-bottom: 0;
   margin-top: var(--space-2);
+}
+
+.version-tag {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  margin-bottom: 0;
+  margin-top: 0;
+  letter-spacing: 0.02em;
 }
 
 /* Message Container Alignment Wrapper */

@@ -17,8 +17,9 @@ const md = new MarkdownIt()
 const renderedContent = computed(() => {
   // Some messages may contain escaped newlines like "\\n" (backslash+n).
   // Convert literal "\\n" sequences back to real newlines so Markdown
-  // renders them as intended.
+  // renders them as intended, then compress repeated blank lines.
   let raw = (props.message.content || '').replace(/\\n/g, '\n')
+  raw = raw.replace(/(?:\r?\n[ \t]*){2,}/g, '\n\n')
 
   // If users included a fenced code block with a language (e.g. ```python),
   // strip the language specifier so the rendered block does not expose the
@@ -40,15 +41,21 @@ const hidePendingPlaceholder = computed(() => isPendingAssistant.value && !hasVi
 
 const normalizeUploadUrl = (rawPath) => {
   if (!rawPath) return null
-  if (/^https?:\/\//i.test(rawPath)) return rawPath
-  let relative = rawPath
+  const safePath = rawPath.replace(/\\/g, '/')
+  if (/^https?:\/\//i.test(safePath)) return safePath
+  let relative = safePath
   relative = relative.replace(/^\.?\/*backend\/chat_uploads\//i, '')
   relative = relative.replace(/^\/?chat_uploads\//i, '')
   return `${UPLOAD_BASE}/${relative}`.replace(/([^:]\/)\/+/g, '$1')
 }
 
 const imageUrls = computed(() => {
-  const content = props.message.content || ''
+  const content = (props.message.content || '').replace(/\\/g, '/')
+  const attachmentUrls = Array.isArray(props.message.files)
+    ? props.message.files
+        .map((file) => normalizeUploadUrl(file.url || file.file_path))
+        .filter(Boolean)
+    : []
   const matches = []
   const addMatches = (regex) => {
     const found = content.match(regex)
@@ -59,10 +66,11 @@ const imageUrls = computed(() => {
   addMatches(/https?:\/\/[^\s)]+\/chat_uploads\/[^\s)]+/gi)
 
   const cleaned = matches
-    .map((item) => item.replace(/[),.;]+$/, ''))
+    .map((item) => item.replace(/[)\],.;，。！？、；：]+$/, ''))
     .map((item) => normalizeUploadUrl(item))
     .filter((item) => item && /\.(png|jpe?g|gif|webp)$/i.test(item))
-  return Array.from(new Set(cleaned))
+  const deduped = Array.from(new Set(cleaned))
+  return deduped.filter((item) => !attachmentUrls.includes(item))
 })
 
 const getFileName = (url) => {

@@ -16,9 +16,17 @@ allowed = ["admin", "user", "engineer", "sale", "manager", "pm"]
 # Default role for newly registered users (except the first admin).
 default_role = "user"
 
+[uploads]
+# Allowed file extensions (lowercase, with dot).
+user_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", ".xls", ".xlsx", ".png", ".jpg", ".jpeg"]
+rag_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt"]
+
+[app]
+version = "1.0.1"
+
 [theme]
 # Choose a preset: "tech", "warm", "minimal"
-profile = "warm"
+profile = "tech"
 # Optional overrides (uncomment to override the selected preset):
 # bg_primary = "#0f172a"
 # bg_secondary = "#1e293b"

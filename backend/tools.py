@@ -1,6 +1,7 @@
 # type: ignore
 import akasha
 import akasha.agent.agent_tools as at
+from .rag_state import get_rag_data_sources, get_rag_instance
 import pandas as pd
 import os
 from pathlib import Path
@@ -9,6 +10,84 @@ from typing import List
 import rich
 import traceback
 from .database import get_connection
+
+
+def _fetch_rag_summaries():
+    conn = None
+    try:
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT id, file_name, summary FROM rag_file ORDER BY created_at DESC"
+        ).fetchall()
+        return rows
+    except Exception:
+        return []
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _get_rag_summary_version() -> str:
+    conn = None
+    try:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT MAX(summary_updated_at) AS last_updated FROM rag_file"
+        ).fetchone()
+        value = row["last_updated"] if row else None
+        return value or ""
+    except Exception:
+        return ""
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _build_rag_tool_description() -> str:
+    rows = _fetch_rag_summaries()
+    if not rows:
+        return "以下為可以此工具用 rag 查找的資料: (目前尚未建立摘要)"
+    lines = ["以下為可以此工具用 rag 查找的資料:"]
+    for row in rows:
+        summary = row["summary"] or "(尚未建立摘要)"
+        lines.append(f"- {row['file_name']}: {summary}")
+    return "\n".join(lines)
+
+
+def _build_rag_data_sources():
+    conn = None
+    try:
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT file_path FROM rag_file ORDER BY created_at DESC"
+        ).fetchall()
+        data_sources = []
+        for row in rows:
+            relative_path = (Path("backend") / "rag_files" / row["file_path"]).as_posix()
+            data_sources.append(relative_path)
+        return data_sources
+    except Exception:
+        return []
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def build_documents_rag_tool():
+    return akasha.create_tool(
+        tool_name="documents_rag_tool",
+        tool_description=_build_rag_tool_description(),
+        func=documents_rag_function
+    )
 
 
 # # 定義一個工具來回傳資料庫表單的總覽資訊
@@ -59,32 +138,6 @@ def get_db_table_content() -> str:
         return f"Read Knowledge file error: {e}"
 
     return content
-
-# def get_table_content(table_name: str | List[str]) -> str:
-#     # # 統一轉為大寫
-#     # table_name = table_name.upper()
-#     try:
-#         # outcome = pd.read_excel('C:/Users/today/Desktop/禾聯電/20250805-提供的資料/db_schema_descriptions-20250804_new.xlsx', sheet_name=table_name)
-#         if table_name.__class__ == list:
-#             outcome_list = []
-#             for tn in table_name:
-#                 outcome = pd.read_excel(
-#                   'C:/Users/today/Desktop/禾聯電/20250805-提供的資料/TableSchema_new.xlsx', # 
-#                   sheet_name=tn)
-#                 outcome_list.append(f"### 表單: {tn}\n" + outcome.to_markdown(index=False, tablefmt="pipe"))
-#             return "\n\n".join(outcome_list) # type: ignore
-        
-#         else:
-#             outcome = pd.read_excel(
-#             'C:/Users/today/Desktop/禾聯電/20250805-提供的資料/TableSchema_new.xlsx', # 
-#             sheet_name=table_name)
-            
-#             # 將結果轉為 markdown 格式
-#             return outcome.to_markdown(index=False, tablefmt="pipe")
-        
-#     except Exception as e:
-#         return f"查詢表單 {table_name} 時發生錯誤: {e}"
-
 
 
 # 創建工具
@@ -282,15 +335,17 @@ def exec_python_code(code, output_path: str = "./backend/chat_uploads/"):
     def _apply_timestamp_to_file_path(exec_env: dict):
         file_path = exec_env.get("file_path")
         if not isinstance(file_path, str) or not file_path.strip():
-            return exec_env
+            return exec_env, None
         path = Path(file_path)
+        if re.search(r"_\d{8}_\d{6}$", path.stem):
+            return exec_env, None
         if not path.exists() and not path.is_absolute():
             output_dir = Path(output_path)
             candidate = output_dir / path
             if candidate.exists():
                 path = candidate
         if not path.exists():
-            return exec_env
+            return exec_env, None
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         candidate = path.with_name(f"{path.stem}_{timestamp}{path.suffix}")
@@ -302,13 +357,16 @@ def exec_python_code(code, output_path: str = "./backend/chat_uploads/"):
             counter += 1
         path.rename(candidate)
         exec_env["file_path"] = str(candidate)
-        return exec_env
+        return exec_env, str(candidate)
 
     try:
         # 先直接嘗試執行原始字串
         exec_env = _exec(code)
-        exec_env = _apply_timestamp_to_file_path(exec_env)
-        return str(exec_env)
+        exec_env, updated_path = _apply_timestamp_to_file_path(exec_env)
+        output = str(exec_env)
+        if updated_path:
+            output += f"\nfile_path: {updated_path}"
+        return output
     except SyntaxError:
         # 若因為跳脫字元造成語法錯誤，嘗試將行分隔的 \\n 替換成真正換行（不動字串內的 '\n' 常值）
         if isinstance(code, str):
@@ -318,8 +376,11 @@ def exec_python_code(code, output_path: str = "./backend/chat_uploads/"):
             fixed = fixed.replace("\\t", "\t")
             try:
                 exec_env = _exec(fixed)
-                exec_env = _apply_timestamp_to_file_path(exec_env)
-                return str(exec_env)
+                exec_env, updated_path = _apply_timestamp_to_file_path(exec_env)
+                output = str(exec_env)
+                if updated_path:
+                    output += f"\nfile_path: {updated_path}"
+                return output
             except Exception as e:
                 print(traceback.format_exc())
                 return f"執行 Python 代碼時發生錯誤: {e}"
@@ -340,6 +401,9 @@ exec_python_tool = akasha.create_tool(
     1.1) code 必須是單一字串；請用 \\n 表示換行，避免直接輸出多行或混用不一致的換行格式，導致無法執行。
     1.2) 請勿在字串常值中插入實際換行（例如標題文字被拆成兩行），也不要在行尾使用反斜線 \\ 做換行續行。
     1.3) 所有字串常值請維持單行（若需要多行文字，請用 \\n 組成字串內容）。
+    1.4) 在 f-string 或一般字串中若要換行，務必寫成 \\n；不要寫成實際換行。
+         錯誤: result = f"文字... \n{file_path}" (這裡是實際換行)
+         正確: result = f"文字... \\n{file_path}"
     2) 將重點計算結果存成變數 result，並使用 print(result) 輸出，避免僅有回傳值無輸出。
     3) 如果有產生檔案結果，請將檔案輸出到 ./backend/chat_uploads/ 資料夾中，同時將檔案路徑也存成變數 file_path，並使用 print(file_path) 輸出。
     4) 請避免使用需要互動輸入的程式碼，例如 input() 函式。
@@ -423,30 +487,19 @@ google_search_tool = akasha.create_tool(
 
 
 # 定義一個使用文件檢索增強生成（RAG）技術的工具
-def documents_rag_tool(query: str) -> str:
+def documents_rag_function(query: str) -> str:
     rich.print("Executing documents_rag_tool...")
-    ak = akasha.RAG(embeddings="openai:text-embedding-3-small",
-                    model="openai:gpt-4o",
-                    max_input_tokens=3000,
-                    keep_logs=True,
-                    verbose=True)
-    
-    response = ak(data_source=["經濟部攜手產業送暖企業捐贈家電寢具助雲嘉南災後復原.pdf"],
-                  prompt=query)
+    ak = get_rag_instance()
+    if ak is None:
+        ak = akasha.RAG(embeddings="openai:text-embedding-3-small",
+                        model="openai:gpt-4o",
+                        max_input_tokens=3000,
+                        keep_logs=True,
+                        verbose=True)
+    data_sources = get_rag_data_sources() or _build_rag_data_sources()
+    response = ak(data_sources=data_sources, prompt=query)
 
     return response
-
-
-# 創建工具
-documents_rag_tool = akasha.create_tool(
-    tool_name="documents_rag_tool",
-    tool_description="""
-    這個工具可以找出禾聯與雲嘉南災後復原的新聞報導。輸入參數 query 為查詢關鍵字。
-    範例:
-    - query = "akasha 是什麼？"
-    """,
-    func=documents_rag_tool
-)
 
 
 # 定義一個工具來進行多步驟思考
@@ -477,37 +530,40 @@ chain_of_thought_tool = akasha.create_tool(
 )
 
 
-# 創建工具
-documents_rag_tool = akasha.create_tool(
-    tool_name="documents_rag_tool",
-    tool_description="""
-    這個工具可以找出禾聯與雲嘉南災後復原的新聞報導。輸入參數 query 為查詢關鍵字。
-    範例:
-    - query = "akasha 是什麼？"
-    """,
-    func=documents_rag_tool
-)
+def build_agent():
+    documents_rag_tool = build_documents_rag_tool()
+    return akasha.agents(
+        tools=[today_tool,
+               table_db_content_tool,
+               sql_query_tool,
+               check_rules_tool,
+               exec_python_tool,
+               documents_rag_tool,
+               google_search_tool,
+               at.saveJSON_tool()
+               ],
+        # model='gemini:gemini-3-flash-preview',
+        model='gemini:gemini-2.5-flash',
+        # model='openai:gpt-4o',
+        temperature=1.0,
+        language='zh',
+        verbose=True,
+        keep_logs=True,
+        max_input_tokens=1048576,
+        max_output_tokens=8192,
+        max_round=10,
+        stream=False,
+    )
 
 
-# 建立 agent
-agent = akasha.agents(
-    tools=[today_tool, 
-           table_db_content_tool,
-           sql_query_tool,
-           check_rules_tool,
-           exec_python_tool,
-           google_search_tool,
-           at.saveJSON_tool()
-           ],
-    # model='gemini:gemini-3-flash-preview',
-    model='gemini:gemini-2.5-flash',
-    # model='openai:gpt-4o',
-    temperature=1.0,
-    language='zh',
-    verbose=True,
-    keep_logs=True,
-    max_input_tokens=1048576,
-    max_output_tokens=8192,
-    max_round=10,
-    stream=False,
-)
+_agent_cache = {"version": None, "agent": None}
+
+
+def get_agent():
+    version = _get_rag_summary_version()
+    if _agent_cache["agent"] is not None and _agent_cache["version"] == version:
+        return _agent_cache["agent"]
+    agent = build_agent()
+    _agent_cache["agent"] = agent
+    _agent_cache["version"] = version
+    return agent

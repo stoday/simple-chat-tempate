@@ -22,15 +22,17 @@ backend/
 ├── main.py               # FastAPI 單檔應用，內含 auth / conversations / messages APIs
 ├── database.py           # SQLite 初始化與連線工具，支援 SIMPLECHAT_DB_PATH 覆寫
 ├── chat_uploads/         # 使用者附件，會依 user_{id}[_displayname]/ 分類
+├── rag_files/            # 管理員上傳的共用 RAG 檔案
 ├── tests/                # pytest 測試（auth + conversations + messages）
 └── requirements.txt
 ```
 
-- **認證**：`/api/auth/register`、`/api/auth/login`、`/api/auth/me`。第一位註冊者自動成為 `admin`；程式碼在 `backend/main.py` 的 `register_user()` 會檢查 `SELECT COUNT(*) FROM user`，若為 0 就設定 `role="admin"`。JWT 以 `SECRET_KEY` 簽署。
+- **認證**：`/api/auth/register`、`/api/auth/login`、`/api/auth/me`。第一位註冊者自動成為 `admin`；之後的新註冊角色依 `config.toml` 的 `roles.default_role`。JWT 以 `SECRET_KEY` 簽署。
 - **對話**：`conversation` 表保存每位使用者的多輪對話列表，API 提供 CRUD 並檢查擁有者／管理員權限。
 - **訊息**：`message` 表與 `message_file` 表記錄每則訊息與附件，並與 `conversation_id` 關聯。
-- **附件儲存**：所有上傳檔案存於 `backend/chat_uploads/user_<id>_<display_name_slug>/UUID_原檔名`。`display_name` 會做 sanitize（非英數轉 `_`、前後去除 `_`）；若沒有顯示名稱，則僅 `user_<id>`。靜態路徑由 `app.mount('/chat_uploads', ...)` 提供。
-- **預設回覆**：`build_simulated_reply()` 目前只是示範；要串接實際 LLM 時，請替換該函式與相關儲存邏輯。
+- **附件儲存**：所有上傳檔案存於 `backend/chat_uploads/user_<id>_<display_name_slug>/原檔名_<8碼>.ext`。`display_name` 會做 sanitize（非英數轉 `_`、前後去除 `_`）；若沒有顯示名稱，則僅 `user_<id>`。靜態路徑由 `app.mount('/chat_uploads', ...)` 提供。
+- **RAG 檔案**：管理員上傳的共用 RAG 檔案存於 `backend/rag_files/`。
+- **LLM 回覆**：目前在 `build_reply()` 內呼叫 `akasha` agent；可依需求替換該流程。
 
 詳細 Schema 請參考 `DB_SCHEMA.md`。
 
@@ -58,6 +60,10 @@ backend/
    - `http://localhost:8000/docs` 為 Swagger UI。
    - 第一次啟動會自動建立 SQLite DB 與 `chat_uploads/` 目錄。
 
+4. **應用設定**
+   - 專案根目錄 `config.toml` 可調整品牌、主題色票與角色清單。
+   - 後端提供 `GET /api/config` 供前端讀取。
+
 4. **依賴說明**
    - `fastapi`, `uvicorn[standard]`: 服務主架構。
    - `python-jose[cryptography]`: JWT。
@@ -75,6 +81,7 @@ backend/
 | Auth | `POST /api/auth/register` | 建立帳號；第一位使用者自動升為 admin（`register_user()` 內檢查 user 數量為 0 即設定 role=admin）。 |
 |      | `POST /api/auth/login`    | 回傳 `{ access_token, user }`。 |
 |      | `GET /api/auth/me`        | 取得登入者資訊。 |
+| App Config | `GET /api/config` | 回傳 `config.toml` 合併後的品牌/主題/角色設定。 |
 | Users | `GET /api/users` (admin) | 列出所有使用者。 |
 |      | `GET/PATCH/DELETE /api/users/{id}` | 本人可查/改自身，admin 可管理所有人。 |
 | Conversations | `GET /api/conversations` | 回傳使用者的所有對話，並附上訊息數。 |
@@ -84,6 +91,9 @@ backend/
 | Messages | `POST /api/messages` | 需要 `conversation_id`，同時支援多附件。回傳 `message` 以及模擬回覆（若助手回覆尚在生成則 `status=pending`）。 |
 |          | `GET /api/messages` | 依 `conversation_id`、`user_id` 查詢。`include_assistant=true` 可取得助手訊息與其狀態。 |
 |          | `POST /api/messages/{id}/stop` | 停止尚未完成的助手訊息，並在資料庫紀錄 `status='cancelled'` 與 `stopped_at`。 |
+| Admin | `GET/POST/DELETE /api/admin/rag-files` | 管理共用 RAG 檔案。 |
+| Admin | `GET/PUT /api/admin/mssql-config` | 取得/更新 MSSQL 連線設定。 |
+| Admin | `POST /api/admin/mssql-config/test` | 測試 MSSQL 連線。 |
 
 > 使用者角色規則：一般使用者只能操作自己的 conversation / messages；`admin` 可跨使用者查詢。
 
@@ -166,5 +176,3 @@ npm run dev
   - 確認 `VITE_UPLOAD_BASE_URL` 與後端 `app.mount('/chat_uploads', ...)` 對應，且檔案存在於 `chat_uploads/user_<id>/`。
 - **測試失敗 (HTTP 405 on OPTIONS)**
   - 需要 CORS 設定；`backend/main.py` 已預設 `http://localhost:5173`，如改用其他域名請同步調整。
-
-如需更多協助或要擴充新功能，歡迎在 issue 或討論區提出。***

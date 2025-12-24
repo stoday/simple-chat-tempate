@@ -1,5 +1,7 @@
 import asyncio
 import json
+import re
+from urllib.parse import urlparse
 import multiprocessing
 import queue as py_queue
 import traceback
@@ -19,18 +21,21 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, validator
 
 from .database import get_connection, get_db, init_db
+from .rag_state import (
+    get_index_status,
+    get_indexed_files,
+    set_index_status,
+    set_indexed_files,
+    set_rag_instance,
+)
 
 import akasha
-from .tools import agent
+from .tools import get_agent
 
 load_dotenv()
-# ak = akasha.ask(model='gemini:gemini-3-flash-preview',
-#                 temperature=1.0,
-#                 max_input_tokens=1048576,
-#                 max_output_tokens=65536)
 
 SECRET_KEY = os.environ.get("SECRET_KEY")
 if not SECRET_KEY:
@@ -87,6 +92,14 @@ class UpdateUserRequest(BaseModel):
     password: Optional[str] = Field(default=None, min_length=8, max_length=128)
     email: Optional[EmailStr] = None
 
+    @validator("password", pre=True)
+    def empty_password_to_none(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
 
 class DeleteResponse(BaseModel):
     detail: str
@@ -125,6 +138,30 @@ class RagFileResponse(BaseModel):
     size_bytes: Optional[int] = None
     uploaded_by: Optional[int] = None
     created_at: str
+
+
+class RagIndexRequest(BaseModel):
+    file_ids: Optional[List[int]] = None
+    rebuild: bool = False
+
+
+class RagIndexResponse(BaseModel):
+    ok: bool
+    detail: str
+    file_ids: List[int] = Field(default_factory=list)
+    indexing: bool = False
+    started_at: Optional[str] = None
+
+
+class RagIndexedFile(BaseModel):
+    file_id: int
+    indexed_at: str
+
+
+class RagIndexStatusResponse(BaseModel):
+    indexing: bool
+    started_at: Optional[str] = None
+    indexed_files: List[RagIndexedFile] = Field(default_factory=list)
 
 
 class MssqlConfigResponse(BaseModel):
@@ -188,6 +225,52 @@ DOWNLOAD_LINKS_PLACEHOLDER = "__DOWNLOAD_LINKS__"
 pending_generations: Dict[int, Dict[str, object]] = {}
 
 
+def _fix_missing_upload_links(text: str) -> str:
+    if not text:
+        return text
+    patterns = [
+        r"(?:\.\/)?backend\/chat_uploads\/[^\s)\]]+",
+        r"\/chat_uploads\/[^\s)\]]+",
+        r"https?:\/\/[^\s)\]]+\/chat_uploads\/[^\s)\]]+",
+    ]
+    matches = []
+    for pattern in patterns:
+        matches.extend(re.findall(pattern, text))
+    cleaned = []
+    for raw in matches:
+        cleaned.append(raw.rstrip(").,;]"))
+    for raw in set(cleaned):
+        prefix = None
+        rel = None
+        if raw.startswith("http"):
+            parsed = urlparse(raw)
+            if "/chat_uploads/" not in parsed.path:
+                continue
+            rel = parsed.path.split("/chat_uploads/", 1)[1]
+            prefix = raw.split("/chat_uploads/", 1)[0] + "/chat_uploads/"
+        elif "backend/chat_uploads/" in raw:
+            rel = raw.split("backend/chat_uploads/", 1)[1]
+            prefix = raw.split("backend/chat_uploads/", 1)[0] + "backend/chat_uploads/"
+        elif "/chat_uploads/" in raw:
+            rel = raw.split("/chat_uploads/", 1)[1]
+            prefix = raw.split("/chat_uploads/", 1)[0] + "/chat_uploads/"
+        elif "chat_uploads/" in raw:
+            rel = raw.split("chat_uploads/", 1)[1]
+            prefix = raw.split("chat_uploads/", 1)[0] + "chat_uploads/"
+        if not rel or prefix is None:
+            continue
+        current_path = UPLOAD_ROOT / rel
+        if current_path.exists():
+            continue
+        candidates = list(current_path.parent.glob(f"{current_path.stem}_*{current_path.suffix}"))
+        if not candidates:
+            continue
+        latest = max(candidates, key=lambda path: path.stat().st_mtime)
+        new_rel = latest.relative_to(UPLOAD_ROOT).as_posix()
+        text = text.replace(raw, f"{prefix}{new_rel}")
+    return text
+
+
 def _load_app_config() -> dict[str, Any]:
     defaults: dict[str, Any] = {
         "branding": {
@@ -199,6 +282,25 @@ def _load_app_config() -> dict[str, Any]:
         "roles": {
             "allowed": ["admin", "user"],
             "default_role": "user",
+        },
+        "app": {
+            "version": "1.0.1",
+        },
+        "uploads": {
+            "user_extensions": [
+                ".pdf",
+                ".doc",
+                ".docx",
+                ".md",
+                ".csv",
+                ".txt",
+                ".xls",
+                ".xlsx",
+                ".png",
+                ".jpg",
+                ".jpeg",
+            ],
+            "rag_extensions": [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", ".xls", ".xlsx"],
         },
         "theme": {
             "profile": "tech",
@@ -332,7 +434,7 @@ def _load_app_config() -> dict[str, Any]:
             parsed = _simple_toml_load(APP_CONFIG_PATH)
         if not isinstance(parsed, dict):
             return defaults
-        for section in ("branding", "roles", "theme", "theme_presets"):
+        for section in ("app", "branding", "roles", "uploads", "theme", "theme_presets"):
             section_data = parsed.get(section)
             if isinstance(section_data, dict):
                 defaults[section].update(section_data)
@@ -349,6 +451,17 @@ def _load_app_config() -> dict[str, Any]:
         default_role = roles_cfg.get("default_role")
         if not isinstance(default_role, str) or default_role not in roles_cfg["allowed"]:
             roles_cfg["default_role"] = "user"
+        uploads_cfg = defaults.get("uploads", {})
+        for key in ("user_extensions", "rag_extensions"):
+            value = uploads_cfg.get(key)
+            if isinstance(value, str):
+                items = [v.strip() for v in value.split(",") if v.strip()]
+                uploads_cfg[key] = items
+            elif not isinstance(value, list):
+                uploads_cfg[key] = []
+            uploads_cfg[key] = [
+                (v if v.startswith(".") else f".{v}").lower() for v in uploads_cfg[key]
+            ]
         return defaults
     except Exception:
         return defaults
@@ -564,14 +677,25 @@ def get_conversation_or_404(conversation_id: int, db: sqlite3.Connection) -> sql
     return row
 
 
-ALLOWED_RAG_EXTENSIONS = {".pdf", ".doc", ".docx", ".md", ".csv", ".txt", ".xls", ".xlsx"}
+def _allowed_extensions(kind: str) -> set[str]:
+    app_config = _load_app_config()
+    uploads_cfg = app_config.get("uploads", {}) if isinstance(app_config, dict) else {}
+    key = "rag_extensions" if kind == "rag" else "user_extensions"
+    values = uploads_cfg.get(key) if isinstance(uploads_cfg, dict) else None
+    if isinstance(values, list) and values:
+        return {str(v).lower() for v in values}
+    if kind == "rag":
+        return {".pdf", ".doc", ".docx", ".md", ".csv", ".txt", ".xls", ".xlsx"}
+    return {".pdf", ".doc", ".docx", ".md", ".csv", ".txt", ".xls", ".xlsx", ".png", ".jpg", ".jpeg"}
 
 
 async def persist_rag_file(upload_file: UploadFile) -> tuple[str, str, int, Optional[str]]:
     safe_name = Path(upload_file.filename or "upload").name
     suffix = Path(safe_name).suffix.lower()
-    if suffix not in ALLOWED_RAG_EXTENSIONS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported file type")
+    allowed = _allowed_extensions("rag")
+    if suffix not in allowed:
+        detail = f"Unsupported file type. Allowed: {', '.join(sorted(allowed))}"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
     unique_name = f"{uuid4().hex}_{safe_name}"
     dest_path = RAG_UPLOAD_ROOT / unique_name
     size = 0
@@ -632,6 +756,11 @@ def make_unique_name(file_name: str) -> str:
 async def persist_upload_file(upload_file: UploadFile, user_id: int, display_name: Optional[str] = None) -> tuple[str, str, int]:
     dest_dir = ensure_user_upload_dir(user_id, display_name)
     safe_name = Path(upload_file.filename or "upload").name
+    suffix = Path(safe_name).suffix.lower()
+    allowed = _allowed_extensions("user")
+    if suffix not in allowed:
+        detail = f"Unsupported file type. Allowed: {', '.join(sorted(allowed))}"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
     unique_name = make_unique_name(safe_name)
     dest_path = dest_dir / unique_name
     size = 0
@@ -754,6 +883,7 @@ def build_reply(
     
     print("start akasha")
     print(prompt)
+    agent = get_agent()
     result = agent(question=prompt)
     print("end akasha")
 
@@ -769,20 +899,29 @@ def build_reply(
 
     try:
         parsed = json.loads(response_text)
-        if isinstance(parsed, dict) and "action" in parsed and "action_input" in parsed:
-            action = str(parsed.get("action", "")).lower()
-            if action in {"answer", "final", "final_answer", "final answer"}:
-                action_input = parsed.get("action_input", "")
-                if isinstance(action_input, (dict, list)):
-                    response_text = json.dumps(action_input, ensure_ascii=False)
-                else:
-                    response_text = str(action_input)
-            else:
-                response_text = "系統尚未產生最終答案，已完成工具查詢，請稍後再試。"
-        elif isinstance(parsed, (dict, list)):
-            response_text = json.dumps(parsed, ensure_ascii=False)
     except json.JSONDecodeError:
-        pass
+        parsed = None
+        if "{" in response_text and "}" in response_text:
+            start = response_text.find("{")
+            end = response_text.rfind("}")
+            if start >= 0 and end > start:
+                candidate = response_text[start : end + 1]
+                try:
+                    parsed = json.loads(candidate)
+                except json.JSONDecodeError:
+                    parsed = None
+    if isinstance(parsed, dict) and "action" in parsed and "action_input" in parsed:
+        action = str(parsed.get("action", "")).lower()
+        if action in {"answer", "final", "final_answer", "final answer"}:
+            action_input = parsed.get("action_input", "")
+            if isinstance(action_input, (dict, list)):
+                response_text = json.dumps(action_input, ensure_ascii=False)
+            else:
+                response_text = str(action_input)
+        else:
+            response_text = "系統尚未產生最終答案，已完成工具查詢，請稍後再試。"
+    elif isinstance(parsed, (dict, list)):
+        response_text = json.dumps(parsed, ensure_ascii=False)
 
     # 開頭為 [THOUGHT]: / [ACTION]: / [OBSERVATION]: / [FINAL ANSWER]: 都濾除掉
     lines = []
@@ -794,7 +933,21 @@ def build_reply(
 
     if not any(line.strip() for line in lines):
         lines = [response_text]
-        
+
+    normalized_lines = []
+    last_blank = False
+    for line in lines:
+        if line.strip():
+            normalized_lines.append(line)
+            last_blank = False
+        else:
+            if not last_blank:
+                normalized_lines.append("")
+            last_blank = True
+
+    normalized_text = "\n".join(normalized_lines)
+    normalized_text = re.sub(r"(?:\r?\n[ \t]*){2,}", "\n\n", normalized_text).strip()
+
     # if files:
     #     lines.append("收到的檔案訊息:")
     #     for file in files:
@@ -819,7 +972,7 @@ def build_reply(
     # lines.append(DOWNLOAD_LINKS_PLACEHOLDER)
     # return "\n".join(lines), generated_files
     
-    return "\n".join(lines)
+    return normalized_text
 
 
 # def build_reply(
@@ -958,6 +1111,7 @@ async def run_assistant_reply(
                     final_text = f"{final_text}\n下載連結:\n" + "\n".join(link_lines)
             else:
                 final_text = final_text.replace(f"\n{DOWNLOAD_LINKS_PLACEHOLDER}", "")
+            final_text = _fix_missing_upload_links(final_text)
             conn.execute(
                 "UPDATE message SET content = ?, status = 'completed', stopped_at = NULL WHERE id = ?",
                 (final_text, message_id),
@@ -970,6 +1124,24 @@ async def run_assistant_reply(
         raise
     except Exception as exc:
         print(f"Assistant reply failed: {exc}")
+        try:
+            conn = get_connection()
+            try:
+                status_row = conn.execute(
+                    "SELECT status, content FROM message WHERE id = ?",
+                    (message_id,),
+                ).fetchone()
+                if status_row and status_row["status"] == "pending":
+                    fallback_text = status_row["content"] or "Response failed."
+                    conn.execute(
+                        "UPDATE message SET content = ?, status = 'failed', stopped_at = datetime('now') WHERE id = ?",
+                        (fallback_text, message_id),
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
+        except Exception as update_exc:
+            print(f"Failed to persist assistant failure state: {update_exc}")
     finally:
         if process is not None and process.is_alive():
             process.terminate()
@@ -1196,6 +1368,115 @@ async def upload_rag_files(
         saved_rows.append(row_to_rag_file(row))
     db.commit()
     return saved_rows
+
+
+@app.post("/api/admin/rag-files/index", response_model=RagIndexResponse)
+def index_rag_files(
+    payload: RagIndexRequest,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> RagIndexResponse:
+    require_admin(current_user)
+    if payload.file_ids:
+        rows = db.execute(
+            "SELECT id, file_path FROM rag_file WHERE id IN ({})".format(
+                ",".join("?" for _ in payload.file_ids)
+            ),
+            payload.file_ids,
+        ).fetchall()
+    else:
+        rows = db.execute("SELECT id, file_path FROM rag_file").fetchall()
+    file_ids = [row["id"] for row in rows]
+    if not file_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No RAG files to index")
+
+    data_sources = []
+    for row in rows:
+        file_path = RAG_UPLOAD_ROOT / row["file_path"]
+        if file_path.exists():
+            relative_path = (Path("backend") / "rag_files" / row["file_path"]).as_posix()
+            data_sources.append(relative_path)
+    if not data_sources:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No RAG files found on disk")
+    
+    print(data_sources)
+
+    started_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    set_index_status(True, started_at)
+    
+    ak = akasha.RAG(
+        embeddings="gemini:gemini-embedding-001",
+        model="gemini:gemini-2.5-flash",
+        max_input_tokens=3000,
+        keep_logs=True,
+        verbose=True)
+
+    completed_at = None
+    indexed_ok = False
+    try:
+        set_rag_instance(ak, data_sources)
+        print('*** ' + str(data_sources))
+        test_response = ak(data_sources=data_sources, prompt="測試")
+        if test_response:
+            print("Akasha RAG test response:", test_response)
+        indexed_ok = True
+        completed_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        set_indexed_files(file_ids, completed_at)
+        summarizer = akasha.summary(
+            model="openai:gpt-4o",
+            sum_type="map_reduce",
+            chunk_size=1000,
+            sum_len=100,
+            language="zh",
+            keep_logs=True,
+            verbose=True,
+            max_input_tokens=8000,
+        )
+        for row in rows:
+            file_path = RAG_UPLOAD_ROOT / row["file_path"]
+            if not file_path.exists():
+                continue
+            try:
+                summary_result = summarizer(content=[str(file_path)])
+            except Exception as exc:
+                print(f"Summary failed for {file_path}: {exc}")
+                continue
+            if isinstance(summary_result, (list, tuple)):
+                summary_text = "\n".join(str(item) for item in summary_result)
+            else:
+                summary_text = str(summary_result)
+            db.execute(
+                "UPDATE rag_file SET summary = ?, summary_updated_at = datetime('now') WHERE id = ?",
+                (summary_text, row["id"]),
+            )
+        db.commit()
+    finally:
+        set_index_status(False, started_at)
+    
+    return RagIndexResponse(
+        ok=True,
+        detail="Indexing request accepted.",
+        file_ids=file_ids,
+        indexing=get_index_status().get("indexing", False),
+        started_at=started_at,
+    )
+
+
+@app.get("/api/admin/rag-files/index/status", response_model=RagIndexStatusResponse)
+def get_rag_index_status(
+    current_user: UserResponse = Depends(get_current_user),
+) -> RagIndexStatusResponse:
+    require_admin(current_user)
+    status_payload = get_index_status()
+    indexed_files = get_indexed_files()
+    indexed_list = [
+        RagIndexedFile(file_id=file_id, indexed_at=ts) for file_id, ts in indexed_files.items()
+    ]
+    return RagIndexStatusResponse(
+        indexing=bool(status_payload.get("indexing")),
+        started_at=status_payload.get("started_at"),
+        indexed_files=indexed_list,
+    )
 
 
 @app.get("/api/admin/rag-files/{file_id}/download")
