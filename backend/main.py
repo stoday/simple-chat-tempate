@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, UploadFile, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field, validator
@@ -33,7 +33,13 @@ from .rag_state import (
 )
 
 import akasha
-from .tools import get_agent
+from .tools import get_agent, clear_agent_cache
+
+# Pre-initialize agent at module level (before any multiprocessing forks)
+# This ensures child processes inherit the cached agent
+print("[MAIN] Pre-loading agent at module level...")
+_PRELOADED_AGENT = get_agent(stream=True)
+print("[MAIN] Agent pre-loaded successfully")
 
 load_dotenv()
 
@@ -245,6 +251,8 @@ RAG_UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 SIMULATED_REPLY_DELAY = float(os.environ.get("SIMULATED_REPLY_DELAY", "1.5"))
 DOWNLOAD_LINKS_PLACEHOLDER = "__DOWNLOAD_LINKS__"
 pending_generations: Dict[int, Dict[str, object]] = {}
+# 用於管理 SSE 串流的 Queue 字典
+active_streams: Dict[int, asyncio.Queue] = {}
 
 
 def _fix_missing_upload_links(text: str) -> str:
@@ -554,6 +562,7 @@ def _run_reply_worker(
                 parent_message_id,
                 owner_user_id,
                 owner_display_name,
+                result_queue,
             )
             result_queue.put(("ok", reply_payload))
         finally:
@@ -891,6 +900,7 @@ def build_reply(
     exclude_message_id: Optional[int] = None,
     owner_user_id: Optional[int] = None,
     owner_display_name: Optional[str] = None,
+    result_queue: Optional[multiprocessing.Queue] = None,
 ) -> Union[str, tuple[str, List[AssistantGeneratedFile]]]:
     """Generate assistant response via LLM."""
     text = content.strip() if content and content.strip() else "(no text provided)"
@@ -952,20 +962,24 @@ def build_reply(
     
     print("start akasha")
     print(prompt)
-    agent = get_agent()
+    # 這裡支援串流輸出
+    agent = get_agent(stream=True)
     result = agent(question=prompt)
     print("end akasha")
 
-    if isinstance(result, str):
-        response_text = result
-    elif isinstance(result, (list, tuple)):
-        response_text = "\n".join(str(item) for item in result)
+    # 如果 result 是產生器，我們需要一個個丟出去
+    full_text = ""
+    if not isinstance(result, str) and hasattr(result, "__iter__"):
+        for chunk in result:
+            # 將每個小塊丟回 Queue，標記為 "token"
+            result_queue.put(("token", chunk))
+            full_text += chunk
+        response_text = full_text
     else:
-        try:
-            response_text = "\n".join(str(item) for item in result)
-        except TypeError:
-            response_text = str(result)
+        response_text = str(result)
+        result_queue.put(("token", response_text))
 
+    # 後續處理 (JSON 解析等)
     try:
         parsed = json.loads(response_text)
     except json.JSONDecodeError:
@@ -1134,26 +1148,42 @@ async def run_assistant_reply(
             pending_entry["process"] = process
 
         reply_payload = None
+        # 初始化 SSE 串流 Queue
+        active_streams[message_id] = asyncio.Queue()
+        
         while True:
             if process.exitcode is not None:
-                try:
-                    status_label, payload = result_queue.get_nowait()
-                    if status_label == "ok":
-                        reply_payload = payload
-                    else:
-                        raise RuntimeError(payload)
-                except py_queue.Empty:
-                    raise RuntimeError("Assistant worker exited without a result")
+                # 即使進程結束，也得把 Queue 裡剩下的東西讀完
+                while not result_queue.empty():
+                    try:
+                        status_label, payload = result_queue.get_nowait()
+                        if status_label == "token":
+                            await active_streams[message_id].put(payload)
+                        elif status_label == "ok":
+                            reply_payload = payload
+                        else:
+                            raise RuntimeError(payload)
+                    except py_queue.Empty:
+                        break
                 break
+
             try:
                 status_label, payload = result_queue.get_nowait()
-                if status_label == "ok":
+                if status_label == "token":
+                    # 將 token 推送到 SSE Queue
+                    # print(f"DEBUG: pushing token {payload[:10]}...")
+                    await active_streams[message_id].put(payload)
+                elif status_label == "ok":
                     reply_payload = payload
+                    break
                 else:
                     raise RuntimeError(payload)
-                break
             except py_queue.Empty:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
+        
+        # 結束串流
+        if message_id in active_streams:
+            await active_streams[message_id].put(None)
 
         if reply_payload is None:
             raise RuntimeError("Assistant worker returned no payload")
@@ -1223,6 +1253,11 @@ async def run_assistant_reply(
             process.terminate()
             process.join(timeout=1.0)
         pending_generations.pop(message_id, None)
+        # 延遲一下移除串流 Queue，讓 SSE 端有時間讀到 None
+        async def delayed_pop():
+            await asyncio.sleep(10)
+            active_streams.pop(message_id, None)
+        asyncio.create_task(delayed_pop())
 
 
 def cancel_pending_generation(message_id: int) -> None:
@@ -1239,12 +1274,18 @@ def cancel_pending_generation(message_id: int) -> None:
 
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: sqlite3.Connection = Depends(get_db),
 ) -> UserResponse:
-    if credentials is None:
+    token = None
+    if credentials:
+        token = credentials.credentials
+    else:
+        token = request.query_params.get("token")
+    
+    if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing credentials")
-    token = credentials.credentials
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
@@ -1748,6 +1789,67 @@ def list_conversations(
     return [row_to_conversation(row) for row in rows]
 
 
+@app.get("/api/messages/{message_id}/stream")
+async def stream_message(
+    message_id: int,
+    current_user: UserResponse = Depends(get_current_user),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    # 權限檢查
+    cursor = db.execute("SELECT user_id FROM message WHERE id = ?", (message_id,))
+    row = cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if current_user.role != "admin" and row["user_id"] != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    async def event_generator():
+        # 等待串流開始
+        found = False
+        for _ in range(30): # 等待最多 3 秒
+            if message_id in active_streams:
+                found = True
+                break
+            await asyncio.sleep(0.1)
+        
+        if not found:
+            # 如果找不到串流，檢查是否已經完成
+            cursor = db.execute("SELECT status, content FROM message WHERE id = ?", (message_id,))
+            row = cursor.fetchone()
+            if row and row["status"] == "completed":
+                yield f"data: {json.dumps({'token': row['content'], 'done': True})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            yield f"data: {json.dumps({'error': 'Stream not found'})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        queue = active_streams[message_id]
+        while True:
+            try:
+                # 這裡使用 wait_for 避免永久卡死
+                token = await asyncio.wait_for(queue.get(), timeout=60.0)
+                if token is None: # 結束標記
+                    yield "data: [DONE]\n\n"
+                    break
+                yield f"data: {json.dumps({'token': token})}\n\n"
+            except asyncio.TimeoutError:
+                yield f"data: {json.dumps({'error': 'Stream timeout'})}\n\n"
+                yield "data: [DONE]\n\n"
+                break
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                yield "data: [DONE]\n\n"
+                break
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
+
+
 @app.post("/api/conversations", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
 def create_conversation(
     payload: ConversationCreateRequest,
@@ -1964,3 +2066,16 @@ async def stop_generation(
     db.commit()
     updated = get_message_row_or_404(message_id, db)
     return row_to_message(updated, get_message_files(db, message_id))
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Pre-initialize agent on server startup to avoid delays on first request."""
+    import sys
+    print("=" * 50, flush=True)
+    print("Initializing agent...", flush=True)
+    sys.stdout.flush()
+    get_agent(stream=True)
+    print("Agent initialized successfully.", flush=True)
+    print("=" * 50, flush=True)
+    sys.stdout.flush()

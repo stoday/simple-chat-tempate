@@ -414,9 +414,15 @@ export const useChatStore = defineStore('chat', () => {
         const existing = ensureMessageBucket(conversationId)
         setMessagesForConversation(conversationId, [...existing, ...appended])
       }
+
+      // 如果有回覆且狀態是 pending，開啟串流連線
       if (data?.reply?.status === 'pending') {
+        connectToStream(data.reply.id, conversationId)
+      } else if (data?.reply?.status === 'completed') {
+        // 如果已經完成（極端快速的情況），也要更新一下
         schedulePendingRefresh(conversationId)
       }
+      
       bumpConversation(conversationId, { updatedAt: new Date().toISOString() })
     } catch (err) {
       const isCanceled = err?.code === 'ERR_CANCELED' || err?.message === 'canceled'
@@ -476,6 +482,67 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  const connectToStream = (messageId, conversationId) => {
+    const token = localStorage.getItem('auth_token')
+    const baseUrl = apiClient.defaults.baseURL
+    const streamUrl = `${baseUrl}/messages/${messageId}/stream?token=${token}`
+    
+    const eventSource = new EventSource(streamUrl)
+    let currentText = ''
+
+    eventSource.onmessage = (event) => {
+      if (event.data === '[DONE]') {
+        eventSource.close()
+        // 串流結束，更新訊息狀態為 completed
+        refreshMessageStatus(messageId, conversationId)
+        return
+      }
+
+      try {
+        console.log('[Stream Raw]:', event.data);
+        const data = JSON.parse(event.data)
+        if (data.token) {
+          console.log('[Stream Token]:', data.token);
+          currentText += data.token
+          console.log('[Stream CurrentText]:', currentText);
+          updateMessageContent(messageId, conversationId, currentText)
+        }
+        if (data.error) {
+          console.error('Stream error:', data.error)
+          eventSource.close()
+          schedulePendingRefresh(conversationId)
+        }
+      } catch (err) {
+        // Ignore parse errors
+      }
+    }
+
+    eventSource.onerror = (err) => {
+      console.error('EventSource failed:', err)
+      eventSource.close()
+      // 如果串流失敗，退回原本的輪詢機制
+      schedulePendingRefresh(conversationId)
+    }
+  }
+
+  const updateMessageContent = (messageId, conversationId, content) => {
+    const bucket = messagesMap.value[conversationId]
+    if (!bucket) return
+    
+    const idx = bucket.findIndex((m) => m.id === String(messageId))
+    if (idx !== -1) {
+      // Directly mutate the content to trigger fine-grained reactivity
+      bucket[idx].content = content
+      // Force trigger if needed, but deep ref should handle it.
+      // If bucket is large, replacing it might be glitchy.
+      // But we are in a Store.
+    }
+  }
+
+  const refreshMessageStatus = async (messageId, conversationId) => {
+    await loadMessages(conversationId)
+  }
+
   return {
     conversations,
     currentMessages,
@@ -497,6 +564,7 @@ export const useChatStore = defineStore('chat', () => {
     sendMessage,
     cancelUpload,
     stopGenerating,
+    connectToStream,
     initialize
   }
 })

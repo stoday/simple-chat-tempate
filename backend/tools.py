@@ -539,7 +539,7 @@ chain_of_thought_tool = akasha.create_tool(
 )
 
 
-def build_agent():
+def build_agent(stream: bool = False):
     db = get_connection()
     try:
         cfg = load_llm_config(db)
@@ -566,18 +566,55 @@ def build_agent():
         max_input_tokens=cfg["max_input_tokens"],
         max_output_tokens=cfg["max_output_tokens"],
         max_round=10,
-        stream=False,
+        stream=stream,
     )
 
 
-_agent_cache = {"version": None, "agent": None}
+# Global agent instance with stronger singleton pattern
+class AgentSingleton:
+    _instance = None
+    _agent = None
+    _stream = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def get_agent(self, stream: bool = False):
+        """Get or create agent instance with caching."""
+        import sys
+        
+        # Check if we have a cached agent with matching stream parameter
+        if self._agent is not None and self._stream == stream:
+            msg = f"[AGENT CACHE] Using cached agent (stream={stream})"
+            print(msg, flush=True)
+            sys.stdout.flush()
+            return self._agent
+        
+        # Build new agent
+        msg = f"[AGENT CACHE] Building new agent (stream={stream})"
+        print(msg, flush=True)
+        sys.stdout.flush()
+        agent = build_agent(stream=stream)
+        self._agent = agent
+        self._stream = stream
+        return agent
+    
+    def clear_cache(self):
+        """Clear agent cache to force rebuild on next get_agent call."""
+        self._agent = None
+        self._stream = None
 
 
-def get_agent():
-    version = _get_rag_summary_version()
-    if _agent_cache["agent"] is not None and _agent_cache["version"] == version:
-        return _agent_cache["agent"]
-    agent = build_agent()
-    _agent_cache["agent"] = agent
-    _agent_cache["version"] = version
-    return agent
+_singleton = AgentSingleton()
+
+
+def get_agent(stream: bool = False):
+    """Get or create agent instance with caching."""
+    return _singleton.get_agent(stream)
+
+
+def clear_agent_cache():
+    """Clear agent cache to force rebuild on next get_agent call."""
+    _singleton.clear_cache()

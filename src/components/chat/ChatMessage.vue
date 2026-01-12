@@ -12,22 +12,56 @@ const props = defineProps({
 
 const UPLOAD_BASE = (import.meta.env.VITE_UPLOAD_BASE_URL || 'http://localhost:8000/chat_uploads').replace(/\/\/$/, '')
 
-const md = new MarkdownIt()
+const md = new MarkdownIt({
+  html: true,
+  breaks: true,
+  linkify: true
+})
+
+
+const parsedContent = computed(() => {
+  let raw = (props.message.content || '').replace(/\\n/g, '\n')
+  
+  // Extract LAST occurrence of Answer action_input (in case of multiple LLM calls)
+  const answerPattern = /"action"\s*:\s*"[^"]*[Aa]nswer[^"]*"[\s\S]*?"action_input"\s*:\s*"([\s\S]*?)(?:"\s*}|$)/g
+  
+  let matches = []
+  let match
+  while ((match = answerPattern.exec(raw)) !== null) {
+    matches.push(match[1])
+  }
+  
+  if (matches.length > 0) {
+    // Take the LAST match (in case of multiple Answer actions)
+    let answer = matches[matches.length - 1]
+    // Clean up escaped characters  
+    answer = answer.replace(/\\n/g, '\n')
+    answer = answer.replace(/\\"/g, '"')
+    answer = answer.replace(/\\t/g, '\t')
+    // Remove trailing JSON artifacts
+    answer = answer.replace(/["}]+\s*$/, '')
+    return { finalAnswer: answer.trim() }
+  }
+  
+  // Check if this is AI response (contains JSON markers) or user message
+  const isAIResponse = /"action"\s*:/.test(raw) || /"thought"\s*:/.test(raw)
+  
+  if (isAIResponse) {
+    // AI is thinking/searching, don't show anything yet
+    return { finalAnswer: '' }
+  }
+  
+  // User message or simple response
+  return { finalAnswer: raw.trim() }
+})
 
 const renderedContent = computed(() => {
-  // Some messages may contain escaped newlines like "\\n" (backslash+n).
-  // Convert literal "\\n" sequences back to real newlines so Markdown
-  // renders them as intended, then compress repeated blank lines.
-  let raw = (props.message.content || '').replace(/\\n/g, '\n')
-  raw = raw.replace(/(?:\r?\n[ \t]*){2,}/g, '\n\n')
-
-  // If users included a fenced code block with a language (e.g. ```python),
-  // strip the language specifier so the rendered block does not expose the
-  // language label but still renders as a code block that can be copied.
-  // Replace any opening fence that has a language token with a plain fence.
-  raw = raw.replace(/```[^\n]*\n/g, '```\n')
-
-  return md.render(raw)
+  const parsed = parsedContent.value
+  // Don't render if empty to avoid empty HTML tags creating visual space
+  if (!parsed.finalAnswer) {
+    return ''
+  }
+  return md.render(parsed.finalAnswer)
 })
 
 const isUser = computed(() => props.message.role === 'user')
@@ -132,6 +166,11 @@ function addCopyButtons() {
 onMounted(() => {
   // 初次插入按鈕
   nextTick(() => addCopyButtons())
+})
+
+// Debug: log content updates
+watch(() => props.message.content, (newVal) => {
+   console.log('[ChatMessage] Content updated, length:', newVal ? newVal.length : 0);
 })
 
 // 當渲染內容變化時（例如新訊息或內容更新），重新插入按鈕
@@ -356,7 +395,8 @@ watch(renderedContent, async () => {
 :deep(.markdown-body strong),
 :deep(.markdown-body em) {
   margin-bottom: var(--space-2);
-  white-space: pre-wrap; /* Preserve newlines */
+  /* white-space: pre-wrap; Removed to avoid double breaking with markdown-it breaks:true */
+  word-wrap: break-word;
   color: #ffffff; /* Force white on children */
 }
 
@@ -436,5 +476,40 @@ watch(renderedContent, async () => {
   width: 14px;
   height: 14px;
   color: #e6edf3;
+}
+
+/* Intermediate Steps Styling */
+:deep(.thought-section),
+:deep(.action-section),
+:deep(.observation-section) {
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: rgba(139, 92, 246, 0.08);
+  border-left: 3px solid rgba(139, 92, 246, 0.5);
+}
+
+:deep(.section-header) {
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: var(--space-2);
+  color: rgba(139, 92, 246, 1);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+:deep(.section-content) {
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.8);
+  padding-left: var(--space-4);
+}
+
+:deep(.tool-call) {
+  font-family: monospace;
+  background: rgba(0, 0, 0, 0.2);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  margin-top: var(--space-2);
 }
 </style>
