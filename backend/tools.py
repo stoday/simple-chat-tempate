@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import List
 import rich
 import traceback
-from .database import get_connection
+from .database import get_connection, load_llm_config
 
 
 def _fetch_rag_summaries():
@@ -429,7 +429,7 @@ def google_search_function(query):
         import dotenv
         dotenv.load_dotenv()
 
-        API_KEY = os.environ['GOOGLE_API_KEY']
+        API_KEY = os.environ.get('GSEARCH_API_KEY') or os.environ.get('GOOGLE_API_KEY')
         CX = os.environ['GOOGLE_CSE_ID']
         url = "https://www.googleapis.com/customsearch/v1"
         params = {"key": API_KEY, "cx": CX, "q": query}
@@ -508,13 +508,19 @@ def documents_rag_function(query: str) -> str:
 # 定義一個工具來進行多步驟思考
 def chain_of_thought(query: str) -> str:
     rich.print("Executing chain_of_thought tool...")
+    db = get_connection()
+    try:
+        cfg = load_llm_config(db)
+    finally:
+        db.close()
+        
     ak = akasha.ask(
-        model="openai:gpt-4o",
-        temperature=1.0,
-        max_input_tokens=1048576,
-        max_output_tokens=8192,
+        model=cfg["model_name"],
+        temperature=cfg["temperature"],
+        max_input_tokens=cfg["max_input_tokens"],
+        max_output_tokens=cfg["max_output_tokens"],
         verbose=True,
-        )
+    )
     
     response = ak('將下列使用者提問的需求，拆解成多步驟的思考過程，並且一步步地給出解決方案，最後再給出完整的回答。\n\n使用者提問: ' + query)
 
@@ -534,6 +540,12 @@ chain_of_thought_tool = akasha.create_tool(
 
 
 def build_agent():
+    db = get_connection()
+    try:
+        cfg = load_llm_config(db)
+    finally:
+        db.close()
+        
     documents_rag_tool = build_documents_rag_tool()
     return akasha.agents(
         tools=[today_tool,
@@ -545,15 +557,14 @@ def build_agent():
                google_search_tool,
                at.saveJSON_tool()
                ],
-        # model='gemini:gemini-3-flash-preview',
-        model='gemini:gemini-2.5-flash',
-        # model='openai:gpt-4o',
-        temperature=1.0,
+        model=cfg["model_name"],
+        temperature=cfg["temperature"],
+        system_prompt=cfg.get("system_prompt"),
         language='zh',
         verbose=True,
         keep_logs=True,
-        max_input_tokens=1048576,
-        max_output_tokens=8192,
+        max_input_tokens=cfg["max_input_tokens"],
+        max_output_tokens=cfg["max_output_tokens"],
         max_round=10,
         stream=False,
     )

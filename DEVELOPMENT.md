@@ -6,7 +6,8 @@
 - [ ] **行動端體驗**：ChatView 側邊欄在手機上應改為抽屜式，按鈕與輸入區需放大。
 - [ ] **Markdown / 程式碼高亮**：在 `ChatMessage.vue` 導入 `markdown-it` + `highlight.js`，並加上複製按鈕。
 - [ ] **串流訊息**：將 `/api/messages` 的回覆改為 SSE/WebSocket，並在前端加入「停止」控制。
-- [ ] **對話層模型設定**：conversation metadata 可包含 model、temperature、system prompt 等。
+- [x] **自動主題生成**：使用者輸入第一個問題後，自動依內容產出主題標題。
+- [x] **全域模型設定**：Admin 可在 UI 調整模型名稱、Temperature 與 System Prompt。
 - [ ] **IndexedDB/LocalStorage 緩存**：未登入時可保留歷史紀錄並與雲端同步。
 - [ ] **CI/CD**：建立 GitHub Actions 於 PR 執行 `npm run build` + `pytest`。
 - [ ] **品牌化/i18n**：導入 `vue-i18n`；所有色票、文案抽出成設定檔。
@@ -32,7 +33,7 @@ backend/
 - **訊息**：`message` 表與 `message_file` 表記錄每則訊息與附件，並與 `conversation_id` 關聯。
 - **附件儲存**：所有上傳檔案存於 `backend/chat_uploads/user_<id>_<display_name_slug>/原檔名_<8碼>.ext`。`display_name` 會做 sanitize（非英數轉 `_`、前後去除 `_`）；若沒有顯示名稱，則僅 `user_<id>`。靜態路徑由 `app.mount('/chat_uploads', ...)` 提供。
 - **RAG 檔案**：管理員上傳的共用 RAG 檔案存於 `backend/rag_files/`。
-- **LLM 回覆**：目前在 `build_reply()` 內呼叫 `akasha` agent；可依需求替換該流程。
+- **LLM 回覆與自動命名**：目前在 `_run_reply_worker` 內呼叫 `akasha` agent。若對話標題為 `"New Chat"`，會先呼叫一個輕量級的 `_generate_conversation_title` (同樣使用 akasha) 來產生標題並更新 DB。
 
 詳細 Schema 請參考 `DB_SCHEMA.md`。
 
@@ -93,6 +94,7 @@ backend/
 |          | `POST /api/messages/{id}/stop` | 停止尚未完成的助手訊息，並在資料庫紀錄 `status='cancelled'` 與 `stopped_at`。 |
 | Admin | `GET/POST/DELETE /api/admin/rag-files` | 管理共用 RAG 檔案。 |
 | Admin | `GET/PUT /api/admin/mssql-config` | 取得/更新 MSSQL 連線設定。 |
+| Admin | `GET/PATCH /api/admin/llm-config` | 取得/更新 LLM 模型設定（模型名稱, Temperature, System Prompt 等）。 |
 | Admin | `POST /api/admin/mssql-config/test` | 測試 MSSQL 連線。 |
 
 > 使用者角色規則：一般使用者只能操作自己的 conversation / messages；`admin` 可跨使用者查詢。
@@ -109,6 +111,7 @@ backend/
 | `conversation` | `id, user_id, title, created_at, updated_at` | 每位使用者可以有多個對話，刪除時會 cascade 刪除訊息與附件。 |
 | `message` | `id, user_id, conversation_id, sender_type, content, created_at` | 文字內容、訊息來源（user/assistant），需指向一個 conversation。 |
 | `message_file` | `id, message_id, file_name, file_path, mime_type, size_bytes, created_at` | 每個附件一筆紀錄；實體檔案存於 `chat_uploads/user_<id>_<slug>/`，slug 由 `display_name` 轉換。 |
+| `llm_config` | `id, model_name, temperature, max_output_tokens, system_prompt` | 全域 LLM 參數設定，僅 admin 可透過 UI 修改。 |
 
 `database.py` 會在 `init_db()` 時建立上述表單，並且如果既有 `message` 表缺少 `conversation_id` 欄位，會以 `ALTER TABLE` 自動補上。
 
@@ -145,7 +148,9 @@ backend/
 - **對話/訊息流程**：`src/stores/chat.js`
   1. `initialize()` 先載入 `GET /api/conversations`，若沒有會自動建立一筆。
   2. `selectConversation()` 呼叫 `GET /api/messages?conversation_id=...`.
-  3. `sendMessage()` 以 `FormData` 將 `conversation_id`, `content`, `files` 傳給 `/api/messages`。若後端回傳的助手訊息 `status = pending`，Pinia 會顯示停止按鈕並透過 `schedulePendingRefresh()` 自動輪詢；使用者按下停止時，`chatStore.stopGenerating()` 會呼叫 `POST /api/messages/{id}/stop` 更新狀態。
+  3. `sendMessage()` 以 `FormData` 將 `conversation_id`, `content`, `files` 傳給 `/api/messages`。若後端回傳的助手訊息 `status = pending`，Pinia 會顯示停止按鈕並透過 `schedulePendingRefresh()` 自動輪詢。
+  4. **標題同步**：`GET /api/messages` 會回傳 `conversation_title`。若前端發現標題已從 "New Chat" 變更，會同步更新 `conversations` store 並存入緩存。
+  5. `stopGenerating()` 會呼叫 `POST /api/messages/{id}/stop` 更新狀態。
   4. 附件 URL 透過 `buildUploadUrl` 指向 `VITE_UPLOAD_BASE_URL`。
 
 前端開發指令：
@@ -176,3 +181,18 @@ npm run dev
   - 確認 `VITE_UPLOAD_BASE_URL` 與後端 `app.mount('/chat_uploads', ...)` 對應，且檔案存在於 `chat_uploads/user_<id>/`。
 - **測試失敗 (HTTP 405 on OPTIONS)**
   - 需要 CORS 設定；`backend/main.py` 已預設 `http://localhost:5173`，如改用其他域名請同步調整。
+
+---
+
+## 📝 自動標題生成、模型設定與 API Key 規範 (2026-01-12 新增)
+
+- **自動對話命名**：系統會在使用者發送第一個問題時，於背景透過 `akasha` 根據提問內容產生主題名稱。
+- **動態模型配置**：Admin 可以在 Settings 頁面即時切換模型名稱 (如 gemini -> gpt-4o)、調整 Temperature 以及設定全域 System Prompt，設定後立即生效。
+- **環境變數命名規範**：
+  - `GEMINI_API_KEY`: 供 LLM 模型（Gemini）使用。
+  - `GSEARCH_API_KEY`: 供 Google Custom Search 工具使用（避免與 `GOOGLE_API_KEY` 產生環境變數衝突警告）。
+
+- **自動對話命名**：系統會在使用者發送第一個問題時，於背景透過 `akasha` 根據提問內容產生簡短的主題名稱，並自動更新側邊欄。
+- **環境變數命名規範**：
+  - `GEMINI_API_KEY`: 供 LLM 模型（Gemini）使用。
+  - `GSEARCH_API_KEY`: 供 Google Custom Search 工具使用（避免與 `GOOGLE_API_KEY` 產生環境變數衝突警告）。

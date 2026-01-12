@@ -23,7 +23,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field, validator
 
-from .database import get_connection, get_db, init_db
+from .database import get_connection, get_db, init_db, load_llm_config
 from .rag_state import (
     get_index_status,
     get_indexed_files,
@@ -186,6 +186,23 @@ class MssqlTestResponse(BaseModel):
     detail: str
 
 
+class LlmConfigResponse(BaseModel):
+    model_name: str
+    temperature: float
+    max_input_tokens: int
+    max_output_tokens: int
+    system_prompt: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class LlmConfigUpdateRequest(BaseModel):
+    model_name: Optional[str] = None
+    temperature: Optional[float] = None
+    max_input_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    system_prompt: Optional[str] = None
+
+
 @dataclass
 class AssistantGeneratedFile:
     file_name: str
@@ -211,6 +228,11 @@ class MessageResponse(BaseModel):
 class MessageCreateResponse(BaseModel):
     message: MessageResponse
     reply: Optional[MessageResponse] = None
+
+
+class MessageListResponse(BaseModel):
+    messages: List[MessageResponse]
+    conversation_title: Optional[str] = None
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -472,6 +494,31 @@ def get_app_config() -> dict[str, Any]:
     return _load_app_config()
 
 
+def _generate_conversation_title(content: str) -> str:
+    """Generate a brief conversation title based on the first message content using akasha."""
+    try:
+        db = get_connection()
+        try:
+            cfg = load_llm_config(db)
+        finally:
+            db.close()
+        
+        ask_obj = akasha.ask(
+            model=cfg["model_name"],
+            temperature=cfg["temperature"],
+            max_output_tokens=50,
+            verbose=False
+        )
+        prompt = f"請根據以下使用者的提問，產生一個不超過 10 個字的簡短對話主題（例如：代碼除錯、美食推薦）。請使用使用者所使用的語系（預設繁體中文），並且只輸出標題文字，不要有任何標點符號或解釋。\n\n提問內容：{content}"
+        title = ask_obj(prompt).strip()
+        # Remove common wrapping like quotes
+        title = re.sub(r'["\'「」『』]', '', title)
+        return title[:50]
+    except Exception as e:
+        print(f"Error generating title: {e}")
+        return "New Chat"
+
+
 def _run_reply_worker(
     content: str,
     files_payload: List[dict],
@@ -484,6 +531,20 @@ def _run_reply_worker(
     try:
         conn = get_connection()
         try:
+            # 1. 檢查是否需要自動命名對話標題 (僅在標題仍為 "New Chat" 時)
+            row = conn.execute(
+                "SELECT title FROM conversation WHERE id = ?", (conversation_id,)
+            ).fetchone()
+            if row and row["title"] == "New Chat":
+                new_title = _generate_conversation_title(content)
+                if new_title and new_title != "New Chat":
+                    conn.execute(
+                        "UPDATE conversation SET title = ?, updated_at = datetime('now') WHERE id = ?",
+                        (new_title, conversation_id),
+                    )
+                    conn.commit()
+
+            # 2. 進行正式的回覆生成
             files = [MessageFileResponse(**item) for item in files_payload]
             reply_payload = build_reply(
                 content,
@@ -1598,6 +1659,56 @@ def test_mssql_config(
         return MssqlTestResponse(ok=False, detail=f"Connection failed: {exc}")
 
 
+@app.get("/api/admin/llm-config", response_model=LlmConfigResponse)
+def get_llm_config(
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> LlmConfigResponse:
+    require_admin(current_user)
+    row = db.execute("SELECT * FROM llm_config WHERE id = 1").fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="LLM config not found")
+    return LlmConfigResponse(**dict(row))
+
+
+@app.patch("/api/admin/llm-config", response_model=LlmConfigResponse)
+def update_llm_config(
+    payload: LlmConfigUpdateRequest,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> LlmConfigResponse:
+    require_admin(current_user)
+    updates = []
+    params: List[Any] = []
+    if payload.model_name is not None:
+        updates.append("model_name = ?")
+        params.append(payload.model_name)
+    if payload.temperature is not None:
+        updates.append("temperature = ?")
+        params.append(payload.temperature)
+    if payload.max_input_tokens is not None:
+        updates.append("max_input_tokens = ?")
+        params.append(payload.max_input_tokens)
+    if payload.max_output_tokens is not None:
+        updates.append("max_output_tokens = ?")
+        params.append(payload.max_output_tokens)
+    if payload.system_prompt is not None:
+        updates.append("system_prompt = ?")
+        params.append(payload.system_prompt)
+    
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updates provided")
+    
+    updates.append("updated_at = datetime('now')")
+    params.append(1) # ID = 1
+    
+    db.execute(f"UPDATE llm_config SET {', '.join(updates)} WHERE id = ?", params)
+    db.commit()
+    
+    row = db.execute("SELECT * FROM llm_config WHERE id = 1").fetchone()
+    return LlmConfigResponse(**dict(row))
+
+
 @app.get("/api/conversations", response_model=List[ConversationResponse])
 def list_conversations(
     user_id: Optional[int] = None,
@@ -1781,14 +1892,14 @@ async def create_message(
     return MessageCreateResponse(message=user_message, reply=assistant_message)
 
 
-@app.get("/api/messages", response_model=List[MessageResponse])
+@app.get("/api/messages", response_model=MessageListResponse)
 def list_messages(
     user_id: Optional[int] = None,
     conversation_id: Optional[int] = None,
     include_assistant: bool = False,
     db: sqlite3.Connection = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
-) -> List[MessageResponse]:
+) -> MessageListResponse:
     target_user_id = user_id or current_user.id
     if current_user.role != "admin" and target_user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
@@ -1805,7 +1916,7 @@ def list_messages(
         )
 
     if base_conversation is None:
-        return []
+        return MessageListResponse(messages=[], conversation_title=None)
 
     if current_user.role != "admin" and base_conversation["user_id"] != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
@@ -1817,7 +1928,8 @@ def list_messages(
         params.append("user")
     sql += " ORDER BY created_at ASC"
     rows = db.execute(sql, tuple(params)).fetchall()
-    return [row_to_message(row, get_message_files(db, row["id"])) for row in rows]
+    messages = [row_to_message(row, get_message_files(db, row["id"])) for row in rows]
+    return MessageListResponse(messages=messages, conversation_title=base_conversation["title"])
 
 
 @app.post("/api/messages/{message_id}/stop", response_model=MessageResponse)

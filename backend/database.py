@@ -85,6 +85,18 @@ CREATE TABLE IF NOT EXISTS mssql_config (
 );
 """
 
+LLM_CONFIG_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS llm_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    model_name TEXT NOT NULL DEFAULT 'gemini:gemini-2.5-flash',
+    temperature REAL NOT NULL DEFAULT 0.7,
+    max_input_tokens INTEGER NOT NULL DEFAULT 1048576,
+    max_output_tokens INTEGER NOT NULL DEFAULT 8192,
+    system_prompt TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
 
 def init_db() -> None:
     """Create the SQLite database file and ensure required tables exist."""
@@ -97,6 +109,14 @@ def init_db() -> None:
         conn.execute(MESSAGE_FILE_TABLE_SQL)
         conn.execute(RAG_FILE_TABLE_SQL)
         conn.execute(MSSQL_CONFIG_TABLE_SQL)
+        conn.execute(LLM_CONFIG_TABLE_SQL)
+        
+        # Insert default LLM config if not exists
+        conn.execute("""
+            INSERT OR IGNORE INTO llm_config (id, model_name, temperature, max_input_tokens, max_output_tokens)
+            VALUES (1, 'gemini:gemini-2.5-flash', 0.7, 1048576, 8192)
+        """)
+        
         ensure_message_columns(conn)
         ensure_rag_file_columns(conn)
         conn.commit()
@@ -137,3 +157,16 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
         yield conn
     finally:
         conn.close()
+
+
+def load_llm_config(db: sqlite3.Connection) -> dict:
+    row = db.execute("SELECT * FROM llm_config WHERE id = 1").fetchone()
+    if row:
+        return dict(row)
+    return {
+        "model_name": "gemini:gemini-2.5-flash",
+        "temperature": 0.7,
+        "max_input_tokens": 1048576,
+        "max_output_tokens": 8192,
+        "system_prompt": None
+    }

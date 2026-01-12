@@ -90,6 +90,15 @@ const mssqlForm = reactive({
   password: '',
   useTrusted: false
 })
+const llmNotice = ref(null)
+const llmSaving = ref(false)
+const llmForm = reactive({
+  model_name: '',
+  temperature: 0.7,
+  max_input_tokens: 1048576,
+  max_output_tokens: 8192,
+  system_prompt: ''
+})
 const editingUserId = ref(null)
 const editForm = reactive({
   email: '',
@@ -203,12 +212,28 @@ const loadMssqlConfig = async () => {
   }
 }
 
+const loadLlmConfig = async () => {
+  if (!isAdmin.value) return
+  llmNotice.value = null
+  try {
+    const { data } = await apiClient.get('/admin/llm-config')
+    llmForm.model_name = data?.model_name || ''
+    llmForm.temperature = data?.temperature ?? 0.7
+    llmForm.max_input_tokens = data?.max_input_tokens ?? 1048576
+    llmForm.max_output_tokens = data?.max_output_tokens ?? 8192
+    llmForm.system_prompt = data?.system_prompt || ''
+  } catch (err) {
+    llmNotice.value = { type: 'error', text: err?.response?.data?.detail || 'Failed to load LLM config.' }
+  }
+}
+
 onMounted(() => {
   if (isAdmin.value) {
     loadUsers()
     loadRagFiles()
     loadRagIndexStatus()
     loadMssqlConfig()
+    loadLlmConfig()
   }
 })
 
@@ -220,6 +245,7 @@ watch(isAdmin, (value) => {
     loadRagFiles()
     loadRagIndexStatus()
     loadMssqlConfig()
+    loadLlmConfig()
   }
 })
 
@@ -413,6 +439,31 @@ const testMssqlConfig = async () => {
     mssqlNotice.value = { type: 'error', text: err?.response?.data?.detail || 'Connection failed.' }
   } finally {
     mssqlTesting.value = false
+  }
+}
+
+const saveLlmConfig = async () => {
+  llmSaving.value = true
+  llmNotice.value = null
+  try {
+    const payload = {
+      model_name: llmForm.model_name,
+      temperature: Number(llmForm.temperature),
+      max_input_tokens: Number(llmForm.max_input_tokens),
+      max_output_tokens: Number(llmForm.max_output_tokens),
+      system_prompt: llmForm.system_prompt || null
+    }
+    const { data } = await apiClient.patch('/admin/llm-config', payload)
+    llmForm.model_name = data?.model_name || ''
+    llmForm.temperature = data?.temperature ?? 0.7
+    llmForm.max_input_tokens = data?.max_input_tokens ?? 1048576
+    llmForm.max_output_tokens = data?.max_output_tokens ?? 8192
+    llmForm.system_prompt = data?.system_prompt || ''
+    llmNotice.value = { type: 'success', text: 'LLM config saved.' }
+  } catch (err) {
+    llmNotice.value = { type: 'error', text: err?.response?.data?.detail || 'Failed to save LLM config.' }
+  } finally {
+    llmSaving.value = false
   }
 }
 </script>
@@ -680,6 +731,48 @@ const testMssqlConfig = async () => {
           <button class="btn btn-ghost" type="button" :disabled="mssqlTesting" @click="testMssqlConfig">
             <i class="ph ph-plug"></i>
             {{ mssqlTesting ? 'Testing...' : 'Test Connection' }}
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <section v-if="isAdmin" class="card">
+      <div class="section-header">
+        <div>
+          <h2>LLM Configuration</h2>
+          <p>Fine-tune the assistant's behavior and model settings.</p>
+        </div>
+      </div>
+
+      <p v-if="llmNotice" :class="['status', llmNotice.type]">
+        {{ llmNotice.text }}
+      </p>
+
+      <form class="form-grid" @submit.prevent="saveLlmConfig">
+        <label>
+          Model Name
+          <input type="text" v-model="llmForm.model_name" placeholder="gemini:gemini-2.5-flash" />
+        </label>
+        <label>
+          Temperature ({{ llmForm.temperature }})
+          <input type="range" v-model="llmForm.temperature" min="0" max="1" step="0.1" />
+        </label>
+        <label>
+          Max Input Tokens
+          <input type="number" v-model="llmForm.max_input_tokens" />
+        </label>
+        <label>
+          Max Output Tokens
+          <input type="number" v-model="llmForm.max_output_tokens" />
+        </label>
+        <label class="full-width">
+          System Prompt
+          <textarea v-model="llmForm.system_prompt" rows="4" placeholder="Configure the assistant's persona..."></textarea>
+        </label>
+        <div class="actions">
+          <button class="btn btn-primary" type="submit" :disabled="llmSaving">
+            <i class="ph ph-floppy-disk"></i>
+            Save LLM Config
           </button>
         </div>
       </form>

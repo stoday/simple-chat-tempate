@@ -237,8 +237,30 @@ export const useChatStore = defineStore('chat', () => {
           include_assistant: includeAssistant
         }
       })
-      const formatted = Array.isArray(data) ? data.map(formatMessageFromApi) : []
+      
+      // Handle potential new object format: { messages, conversation_title }
+      let rawMessages = []
+      let newTitle = null
+      
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        rawMessages = data.messages || []
+        newTitle = data.conversation_title
+      } else {
+        rawMessages = Array.isArray(data) ? data : []
+      }
+
+      const formatted = rawMessages.map(formatMessageFromApi)
       setMessagesForConversation(conversationId, formatted)
+      
+      // Update local conversation title if it changed from "New Chat" or shifted on backend
+      if (newTitle) {
+        const idx = conversations.value.findIndex(c => c.id === String(conversationId))
+        if (idx !== -1 && conversations.value[idx].title !== newTitle) {
+          conversations.value[idx].title = newTitle
+          saveCachedConversations(conversations.value)
+        }
+      }
+
       const hasPending = formatted.some((msg) => msg.role === 'assistant' && msg.status === 'pending')
       if (hasPending) {
         schedulePendingRefresh(conversationId)
