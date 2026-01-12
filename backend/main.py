@@ -506,8 +506,8 @@ def _generate_conversation_title(content: str) -> str:
         ask_obj = akasha.ask(
             model=cfg["model_name"],
             temperature=cfg["temperature"],
-            max_output_tokens=50,
-            verbose=False
+            max_output_tokens=1000,
+            verbose=True
         )
         prompt = f"請根據以下使用者的提問，產生一個不超過 10 個字的簡短對話主題（例如：代碼除錯、美食推薦）。請使用使用者所使用的語系（預設繁體中文），並且只輸出標題文字，不要有任何標點符號或解釋。\n\n提問內容：{content}"
         title = ask_obj(prompt).strip()
@@ -928,18 +928,26 @@ def build_reply(
         if owner_row:
             display_name = owner_row["display_name"] or display_name
             role = owner_row["role"] or role
+
+    # 載入管理員設定的模型配置
+    cfg = load_llm_config(db)
+    admin_system_prompt = cfg.get("system_prompt") or "請根據上述歷史對話紀錄與使用者提問，產生適當的回覆內容。如果有多項資訊，可以用表格或是條列式呈現。"
+
     prompt = f'''
-    # 歷史對話紀錄
-    {history_block}
-    
-    # 使用者提問
-    {text}
-    
-    # 注意事項
-    1. 現在是{datetime.now():%Y年%m月%d日}，請根據上述歷史對話紀錄與使用者提問，產生適當的回覆內容。
-    2. 現在的使用者為 id={owner_user_id}, name={display_name}, role={role}，若使用 exec_python_code 產生檔案，請輸出到 {user_upload_dir}。
-    3. 如果有多項資訊，可以用表格或是條列式呈現。
-    '''
+# 歷史對話紀錄
+{history_block}
+
+# 環境資訊
+- 現在時間：{datetime.now():%Y年%m月%d日}
+- 當前使用者：id={owner_user_id}, name={display_name}, role={role}
+- 檔案路徑：{user_upload_dir} (若執行 Python 產生檔案請存放於此)
+
+# 任務規範
+{admin_system_prompt}
+
+# 使用者提問
+{text}
+'''
     
     
     print("start akasha")
