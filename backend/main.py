@@ -1112,12 +1112,19 @@ async def run_assistant_reply(
             else:
                 final_text = final_text.replace(f"\n{DOWNLOAD_LINKS_PLACEHOLDER}", "")
             final_text = _fix_missing_upload_links(final_text)
-            conn.execute(
-                "UPDATE message SET content = ?, status = 'completed', stopped_at = NULL WHERE id = ?",
-                (final_text, message_id),
-            )
-            conn.execute("UPDATE conversation SET updated_at = datetime('now') WHERE id = ?", (conversation_id,))
-            conn.commit()
+            for attempt in range(3):
+                try:
+                    conn.execute(
+                        "UPDATE message SET content = ?, status = 'completed', stopped_at = NULL WHERE id = ?",
+                        (final_text, message_id),
+                    )
+                    conn.execute("UPDATE conversation SET updated_at = datetime('now') WHERE id = ?", (conversation_id,))
+                    conn.commit()
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc).lower() or attempt == 2:
+                        raise
+                    await asyncio.sleep(0.2 * (attempt + 1))
         finally:
             conn.close()
     except asyncio.CancelledError:

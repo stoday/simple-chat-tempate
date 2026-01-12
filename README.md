@@ -1,6 +1,6 @@
 # SimpleChat – 後端友善的對話機器人範本
 
-這個專案提供一套可直接使用的聊天 UI，但重點是讓只會後端與 Python 的人，也能快速做出可用的對話服務。你只需要改一個 Python 函式，就能把回覆串到你自己的 LLM 或任何內部服務。
+這個專案提供一套可直接使用的聊天 UI，但重點是讓只會後端與 Python 的人，也能快速做出可用的對話服務。只需要改一個 Python 函式，就能把回覆串到自己的 LLM 或任何內部服務。
 
 ## ⚡ 快速開始（後端為主）
 1. **建立虛擬環境並安裝依賴**
@@ -25,7 +25,7 @@
 
 ## 🔌 LLM 串接入口（最重要）
 後端已經把「收到使用者訊息 → 產生助手回覆」的流程串好，目前在 `backend/main.py` 的 `build_reply()` 內呼叫 `akasha` agent。  
-若要改成你自己的模型/服務，請從 `build_reply()` 或 `backend/tools.py` 的 agent 設定著手。
+若要改成自己的模型/服務，請從 `build_reply()` 或 `backend/tools.py` 的 agent 設定著手。
 
 **流程小抄**
 - `POST /api/messages`：收到使用者訊息，建立一筆 `assistant` 的 pending 訊息。
@@ -35,7 +35,7 @@
 更詳細的 API/DB 結構請看 `DEVELOPMENT.md` 與 `DB_SCHEMA.md`。
 
 ## 🖥️ 前端（可選）
-若你想直接用現成 UI：
+若想直接用現成 UI：
 ```bash
 npm install
 npm run dev

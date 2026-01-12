@@ -404,6 +404,9 @@ exec_python_tool = akasha.create_tool(
     1.4) 在 f-string 或一般字串中若要換行，務必寫成 \\n；不要寫成實際換行。
          錯誤: result = f"文字... \n{file_path}" (這裡是實際換行)
          正確: result = f"文字... \\n{file_path}"
+    1.5) 這裡的 code 是「原生 Python 程式碼」，不要自行加上 \\\" 這類跳脫字元。
+         錯誤: df.to_markdown(index=False, numalign=\\\"right\\\")
+         正確: df.to_markdown(index=False, numalign="right")
     2) 將重點計算結果存成變數 result，並使用 print(result) 輸出，避免僅有回傳值無輸出。
     3) 如果有產生檔案結果，請將檔案輸出到 ./backend/chat_uploads/ 資料夾中，同時將檔案路徑也存成變數 file_path，並使用 print(file_path) 輸出。
     4) 請避免使用需要互動輸入的程式碼，例如 input() 函式。

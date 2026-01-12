@@ -3,7 +3,7 @@
 *.db
 Knowledge
 chat_uploads
-akasha_package
+akasha-package
 backend/rag_files/
 chromadb/
 rag_uploads
