@@ -2,14 +2,13 @@ import axios from 'axios'
 
 // Create an Axios instance with default config
 const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api', // Default to local FastAPI backend if not set
+  baseURL: (window.__API_BASE__ ? window.__API_BASE__.replace(/\/$/, '') + '/api' : import.meta.env.VITE_API_BASE_URL) || 'http://localhost:8000/api', 
   headers: {
     'Content-Type': 'application/json',
     'Accept': 'application/json'
   },
   timeout: 0 // disable timeout (no limit)
 })
-
 // Request interceptor to add Auth Token
 apiClient.interceptors.request.use(
   (config) => {

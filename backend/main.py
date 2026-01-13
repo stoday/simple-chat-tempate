@@ -52,14 +52,63 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer(auto_error=False)
 
-app = FastAPI(title="SimpleChat Auth API")
+# 從 config.toml 讀取配置
+_config_data = {}
+_allowed_origins = ["http://localhost:5173"]  # 預設值
+_api_title = "SimpleChat Auth API"  # 預設值
+_api_version = "1.0.0"  # 預設值
 
+try:
+    import tomli
+    from pathlib import Path
+    
+    # 定義 BASE_DIR (backend 資料夾的路徑)
+    _BASE_DIR = Path(__file__).resolve().parent
+    _config_path = _BASE_DIR.parent / "config.toml"
+    
+    print(f"[CONFIG] Config path: {_config_path}")
+    print(f"[CONFIG] Config exists: {_config_path.exists()}")
+    
+    if _config_path.exists():
+        with open(_config_path, "rb") as f:
+            _config_data = tomli.load(f)
+        print(f"[CONFIG] Config loaded, keys: {list(_config_data.keys())}")
+        
+        # 讀取部署配置
+        deployment_config = _config_data.get("deployment", {})
+        _allowed_origins = deployment_config.get("frontend_domains", ["http://localhost:5173"])
+        print(f"[CONFIG] Frontend domains: {_allowed_origins}")
+        
+        # 讀取品牌配置
+        branding_config = _config_data.get("branding", {})
+        _brand_title = branding_config.get("title", "SimpleChat")
+        _api_title = f"{_brand_title} API"
+        print(f"[CONFIG] API title: {_api_title}")
+        
+        # 讀取版本號
+        app_config = _config_data.get("app", {})
+        _api_version = app_config.get("version", "1.0.0")
+        print(f"[CONFIG] API version: {_api_version}")
+    else:
+        print(f"[CONFIG] Config file not found, using defaults")
+except Exception as e:
+    print(f"[CONFIG] ERROR loading config: {type(e).__name__}: {e}")
+    import traceback
+    traceback.print_exc()
+
+print(f"[CONFIG] Initializing FastAPI: {_api_title} v{_api_version}")
+
+# 初始化 FastAPI 應用
+app = FastAPI(
+    title=_api_title,
+    version=_api_version,
+    description="Backend API for chat application with authentication and file management"
+)
+
+# 設置 CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -259,9 +308,9 @@ def _fix_missing_upload_links(text: str) -> str:
     if not text:
         return text
     patterns = [
-        r"(?:\.\/)?backend\/chat_uploads\/[^\s)\]]+",
-        r"\/chat_uploads\/[^\s)\]]+",
-        r"https?:\/\/[^\s)\]]+\/chat_uploads\/[^\s)\]]+",
+        r"(?:\.\/)?backend[\/\\]+chat_uploads[\/\\]+[^\s)\]]+",
+        r"[\/\\]+chat_uploads[\/\\]+[^\s)\]]+",
+        r"https?:\/\/[^\s)\]]+?[\/\\]+chat_uploads[\/\\]+[^\s)\]]+",
     ]
     matches = []
     for pattern in patterns:
@@ -270,34 +319,32 @@ def _fix_missing_upload_links(text: str) -> str:
     for raw in matches:
         cleaned.append(raw.rstrip(").,;]"))
     for raw in set(cleaned):
-        prefix = None
+        # 先將反斜線轉為正斜線以便統一處理
+        norm_raw = raw.replace("\\", "/")
         rel = None
-        if raw.startswith("http"):
-            parsed = urlparse(raw)
-            if "/chat_uploads/" not in parsed.path:
-                continue
-            rel = parsed.path.split("/chat_uploads/", 1)[1]
-            prefix = raw.split("/chat_uploads/", 1)[0] + "/chat_uploads/"
-        elif "backend/chat_uploads/" in raw:
-            rel = raw.split("backend/chat_uploads/", 1)[1]
-            prefix = raw.split("backend/chat_uploads/", 1)[0] + "backend/chat_uploads/"
-        elif "/chat_uploads/" in raw:
-            rel = raw.split("/chat_uploads/", 1)[1]
-            prefix = raw.split("/chat_uploads/", 1)[0] + "/chat_uploads/"
-        elif "chat_uploads/" in raw:
-            rel = raw.split("chat_uploads/", 1)[1]
-            prefix = raw.split("chat_uploads/", 1)[0] + "chat_uploads/"
-        if not rel or prefix is None:
+        if "/chat_uploads/" in norm_raw:
+            rel = norm_raw.split("/chat_uploads/", 1)[1]
+        elif "backend/chat_uploads/" in norm_raw:
+            rel = norm_raw.split("backend/chat_uploads/", 1)[1]
+        elif "chat_uploads/" in norm_raw:
+            rel = norm_raw.split("chat_uploads/", 1)[1]
+            
+        if not rel:
             continue
+            
+        # 移除可能帶有的隨機後綴 (如果有的話)，先確認檔案是否存在
         current_path = UPLOAD_ROOT / rel
-        if current_path.exists():
-            continue
-        candidates = list(current_path.parent.glob(f"{current_path.stem}_*{current_path.suffix}"))
-        if not candidates:
-            continue
-        latest = max(candidates, key=lambda path: path.stat().st_mtime)
-        new_rel = latest.relative_to(UPLOAD_ROOT).as_posix()
-        text = text.replace(raw, f"{prefix}{new_rel}")
+        if not current_path.exists():
+            # 嘗試找尋帶有時間戳的最新檔案
+            candidates = list(current_path.parent.glob(f"{current_path.stem}_*{current_path.suffix}"))
+            if candidates:
+                latest = max(candidates, key=lambda path: path.stat().st_mtime)
+                rel = latest.relative_to(UPLOAD_ROOT).as_posix()
+        
+        # 統一轉換為以 /chat_uploads/ 開頭的相對路徑，讓前端根據目前的 Domain 動態解析
+        new_url = f"/chat_uploads/{rel}"
+        if raw != new_url:
+            text = text.replace(raw, new_url)
     return text
 
 
@@ -319,18 +366,13 @@ def _load_app_config() -> dict[str, Any]:
         "uploads": {
             "user_extensions": [
                 ".pdf",
-                ".doc",
                 ".docx",
                 ".md",
-                ".csv",
                 ".txt",
-                ".xls",
-                ".xlsx",
-                ".png",
-                ".jpg",
-                ".jpeg",
+                ".csv",
+                ".pptx"
             ],
-            "rag_extensions": [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", ".xls", ".xlsx"],
+            "rag_extensions": [".pdf", ".docx", ".md", ".txt", ".csv", ".pptx"],
         },
         "theme": {
             "profile": "tech",
@@ -939,18 +981,45 @@ def build_reply(
             display_name = owner_row["display_name"] or display_name
             role = owner_row["role"] or role
 
+    # 獲取本對話中所有已上傳的檔案資訊 (支援歷史檔案問答)
+    available_files_rows = db.execute(
+        """
+        SELECT mf.file_name, mf.file_path 
+        FROM message_file mf
+        JOIN message m ON mf.message_id = m.id
+        WHERE m.conversation_id = ?
+        ORDER BY mf.created_at ASC
+        """,
+        (conversation_id,),
+    ).fetchall()
+    
+    files_info_list = []
+    for f_row in available_files_rows:
+        # 使用絕對路徑
+        abs_p = (UPLOAD_ROOT / f_row["file_path"]).resolve().as_posix()
+        files_info_list.append(f"- 檔案名稱: {f_row['file_name']}, 完整路徑: {abs_p}")
+    files_block = "\n".join(files_info_list) if files_info_list else "目前無上傳檔案。"
+
     # 載入管理員設定的模型配置
     cfg = load_llm_config(db)
     admin_system_prompt = cfg.get("system_prompt") or "請根據上述歷史對話紀錄與使用者提問，產生適當的回覆內容。如果有多項資訊，可以用表格或是條列式呈現。"
+    
+    # 確保系統提示語包含檔案問答工具的使用說明
+    if "upload_file_qa_tool" not in admin_system_prompt:
+        admin_system_prompt += "\n\n重要：當使用者詢問有關上傳檔案（或歷史檔案）的內容、總結或細節時，請務必使用 `upload_file_qa_tool` 工具，並從「上傳檔案資訊」節點中取得對應的檔案完整路徑作為輸入。"
 
     prompt = f'''
 # 歷史對話紀錄
 {history_block}
 
 # 環境資訊
-- 現在時間：{datetime.now():%Y年%m月%d日}
+- 現在時間：{datetime.now():%Y年%m月%d日 %H:%M}
+- 你是一個 GPT OSS 120B 的大語言模型所建構的應用服務系統，可以使用多種工具與參考資料來回答使用者的問題。
 - 當前使用者：id={owner_user_id}, name={display_name}, role={role}
-- 檔案路徑：{user_upload_dir} (若執行 Python 產生檔案請存放於此)
+- 對話上傳目錄：{user_upload_dir} (若執行 Python 產生檔案請優先存放於此)
+
+# 上傳檔案資訊 (可用於 upload_file_qa_tool)
+{files_block}
 
 # 任務規範
 {admin_system_prompt}
@@ -1211,6 +1280,7 @@ async def run_assistant_reply(
             else:
                 final_text = final_text.replace(f"\n{DOWNLOAD_LINKS_PLACEHOLDER}", "")
             final_text = _fix_missing_upload_links(final_text)
+            
             for attempt in range(3):
                 try:
                     conn.execute(
@@ -1717,7 +1787,11 @@ def get_llm_config(
     row = db.execute("SELECT * FROM llm_config WHERE id = 1").fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="LLM config not found")
-    return LlmConfigResponse(**dict(row))
+    
+    data = dict(row)
+    # [TEMPORARY DECOUPLING] Display fake model name to frontend
+    data["model_name"] = "openai:gpt-oss-120b"
+    return LlmConfigResponse(**data)
 
 
 @app.patch("/api/admin/llm-config", response_model=LlmConfigResponse)
@@ -1729,7 +1803,7 @@ def update_llm_config(
     require_admin(current_user)
     updates = []
     params: List[Any] = []
-    if payload.model_name is not None:
+    if payload.model_name is not None and payload.model_name != "openai:gpt-oss-120b":
         updates.append("model_name = ?")
         params.append(payload.model_name)
     if payload.temperature is not None:
@@ -1755,7 +1829,10 @@ def update_llm_config(
     db.commit()
     
     row = db.execute("SELECT * FROM llm_config WHERE id = 1").fetchone()
-    return LlmConfigResponse(**dict(row))
+    data = dict(row)
+    # [TEMPORARY DECOUPLING] Display fake model name to frontend
+    data["model_name"] = "openai:gpt-oss-120b"
+    return LlmConfigResponse(**data)
 
 
 @app.get("/api/conversations", response_model=List[ConversationResponse])
@@ -1897,9 +1974,32 @@ def delete_conversation(
     conversation = get_conversation_or_404(conversation_id, db)
     if current_user.role != "admin" and conversation["user_id"] != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    
+    # 1. 獲取該對話相關的所有實體檔案路徑
+    file_rows = db.execute(
+        """
+        SELECT mf.file_path 
+        FROM message_file mf
+        JOIN message m ON mf.message_id = m.id
+        WHERE m.conversation_id = ?
+        """,
+        (conversation_id,),
+    ).fetchall()
+    
+    # 2. 從資料庫刪除對話 (會透過 CASCADE 刪除 message 與 message_file 的 record)
     db.execute("DELETE FROM conversation WHERE id = ?", (conversation_id,))
     db.commit()
-    return DeleteResponse(detail="Conversation deleted")
+    
+    # 3. 刪除實體檔案
+    for row in file_rows:
+        try:
+            full_path = UPLOAD_ROOT / row["file_path"]
+            if full_path.exists() and full_path.is_file():
+                full_path.unlink()
+        except Exception as e:
+            print(f"Error deleting file {row['file_path']}: {e}")
+
+    return DeleteResponse(detail="Conversation deleted and associated files removed")
 
 
 @app.post("/api/messages", response_model=MessageCreateResponse)

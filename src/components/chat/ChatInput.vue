@@ -1,5 +1,6 @@
 ﻿<script setup>
 import { ref, computed, nextTick, watch, onMounted } from 'vue'
+import { useAppConfigStore } from '../../stores/appConfig'
 
 const props = defineProps({
   canStop: {
@@ -23,6 +24,13 @@ const selectedFiles = ref([])
 const isDragging = ref(false)
 const isSending = ref(false)
 let sendLockTimer = null
+
+const appConfig = useAppConfigStore()
+const allowedExtensions = computed(() => {
+  return appConfig.config?.uploads?.user_extensions || ['.pdf', '.docx', '.md', '.txt', '.csv', '.pptx']
+})
+
+const acceptAttribute = computed(() => allowedExtensions.value.join(','))
 
 const showStopButton = computed(() => !!props.canStop)
 const isUploading = computed(() => !!props.isUploading)
@@ -103,7 +111,14 @@ const openFilePicker = () => {
 const handleFileSelect = (e) => {
   const files = Array.from(e.target.files || [])
   if (files.length > 0) {
-    selectedFiles.value.push(...files)
+    const validFiles = files.filter(file => {
+      const ext = '.' + file.name.split('.').pop().toLowerCase()
+      return allowedExtensions.value.includes(ext)
+    })
+    
+    if (validFiles.length > 0) {
+      selectedFiles.value.push(...validFiles)
+    }
   }
   e.target.value = ''
 }
@@ -128,7 +143,18 @@ const handleDrop = (e) => {
 
   const files = Array.from(e.dataTransfer?.files || [])
   if (files.length > 0) {
-    selectedFiles.value.push(...files)
+    // Filter files by extension if needed (optional but good for UX)
+    const validFiles = files.filter(file => {
+      const ext = '.' + file.name.split('.').pop().toLowerCase()
+      return allowedExtensions.value.includes(ext)
+    })
+    
+    if (validFiles.length > 0) {
+      selectedFiles.value.push(...validFiles)
+    } else if (files.length > 0) {
+      // Optional: alert user about invalid files
+      console.warn('Invalid file type detected')
+    }
   }
 }
 
@@ -177,7 +203,7 @@ defineExpose({
         multiple
         style="display: none" 
         @change="handleFileSelect"
-        accept="image/*,.pdf,.doc,.docx,.txt"
+        :accept="acceptAttribute"
         aria-label="Attach files"
       />
       
@@ -298,7 +324,7 @@ defineExpose({
   border: 2px dashed var(--primary);
   border-radius: var(--radius-xl);
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
@@ -310,7 +336,7 @@ defineExpose({
 }
 
 .drag-overlay i {
-  font-size: 2.5rem;
+  font-size: 1.8rem;
 }
 
 .input-content {

@@ -9,7 +9,8 @@ import './assets/css/variables.css'
 import './assets/css/base.css'
 import '@phosphor-icons/web/regular'; // Load Phosphor Icons
 
-window.__API_BASE__ = import.meta.env.VITE_API_BASE_URL
+// Note: window.__API_BASE__ is set dynamically in index.html based on environment
+// Do not override it here to allow proper environment detection
 
 const app = createApp(App)
 
