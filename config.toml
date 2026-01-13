@@ -1,6 +1,6 @@
 [branding]
 # Login page subtitle (displayed under the title).
-title = "SimpleChat"
+title = "HeranChat"
 brand_icon = "ph-chat-teardrop-text"
 empty_state_icon = "ph-sparkle"
 login_subtitle = "Your premium AI assistant"
@@ -18,11 +18,24 @@ default_role = "user"
 
 [uploads]
 # Allowed file extensions (lowercase, with dot).
-user_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", ".xls", ".xlsx", ".png", ".jpg", ".jpeg"]
-rag_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt"]
+user_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", "ppt", "pptx"]
+rag_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", "ppt", "pptx"]
 
 [app]
-version = "1.0.1"
+version = "1.1"
+
+[deployment]
+# 部署域名設定 (用於 CORS 與前端自動偵測)
+# 修改這些設定後需要重啟後端服務
+frontend_domains = [
+    "https://heranchat.demo-today.org",
+    "http://localhost:5173"
+]
+# API 域名 (前端會根據 frontend_domain 自動對應)
+# 格式: "frontend前綴" = "api域名"
+api_domain_mapping = { "heranchat" = "api" }
+# 預設 API 域名 (用於非特定前綴的情況)
+default_api_domain = "api.demo-today.org"
 
 [theme]
 # Choose a preset: "tech", "warm", "minimal"

@@ -8,6 +8,34 @@
   </head>
   <body>
     <div id="app"></div>
+    <script>
+      // 動態偵測 API 地址
+      (function() {
+        const hostname = window.location.hostname;
+        const protocol = window.location.protocol;
+        
+        // 優先判斷是否為預設的 Cloudflare 展示網域
+        if (hostname.includes('demo-today.org')) {
+          if (hostname.startsWith('app.') || hostname.startsWith('heranchat.')) {
+            // app.demo-today.org 或 heranchat.demo-today.org -> api.demo-today.org
+            window.__API_BASE__ = protocol + '//api.demo-today.org';
+          } else {
+            // 如果只有 demo-today.org，預設 api.demo-today.org
+            window.__API_BASE__ = protocol + '//api.demo-today.org';
+          }
+        } else if (hostname === 'localhost' || hostname === '127.0.0.1') {
+          // 本地開發環境
+          window.__API_BASE__ = 'http://localhost:8000';
+        } else {
+          // 內部網路環境或其他網域：自動鎖定目前 Host 的 8000 埠
+          window.__API_BASE__ = protocol + '//' + hostname + ':8000';
+        }
+        
+        // 確保結尾沒有斜線
+        window.__API_BASE__ = window.__API_BASE__.replace(/\/$/, '');
+        console.log('[API Config] Base URL set to:', window.__API_BASE__);
+      })();
+    </script>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

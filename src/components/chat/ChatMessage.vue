@@ -10,7 +10,12 @@ const props = defineProps({
   }
 })
 
-const UPLOAD_BASE = (import.meta.env.VITE_UPLOAD_BASE_URL || 'http://localhost:8000/chat_uploads').replace(/\/\/$/, '')
+const getUploadBase = () => {
+  // 移除可能存在的 /api 後綴，因為 chat_uploads 是掛載在根路徑，不在 /api 下
+  let base = window.__API_BASE__ || ''
+  base = base.replace(/\/api\/?$/, '') // 移除結尾的 /api 或 /api/
+  return (base ? base.replace(/\/$/, '') + '/chat_uploads' : import.meta.env.VITE_UPLOAD_BASE_URL) || 'http://localhost:8000/chat_uploads'
+}
 
 const md = new MarkdownIt({
   html: true,
@@ -61,7 +66,24 @@ const renderedContent = computed(() => {
   if (!parsed.finalAnswer) {
     return ''
   }
-  return md.render(parsed.finalAnswer)
+  
+  // 清理所有完整域名的 chat_uploads URL，統一改為相對路徑
+  // 這會處理 markdown 渲染前的文字，確保 "uploaded image" 後面的連結正確
+  let cleanedContent = parsed.finalAnswer.replace(
+    /https?:\/\/[^\s/]+(?::\d+)?\/(?:api\/)?chat_uploads\//gi,
+    '/chat_uploads/'
+  )
+  
+  // 渲染 Markdown
+  let html = md.render(cleanedContent)
+  
+  // 移除 Markdown 中的 <img> 標籤，因為圖片會在下方的 inline-images 區域顯示
+  html = html.replace(/<img[^>]*>/gi, '')
+  
+  // 移除可能產生的空段落
+  html = html.replace(/<p>\s*<\/p>/gi, '')
+  
+  return html
 })
 
 const isUser = computed(() => props.message.role === 'user')
@@ -75,27 +97,46 @@ const hidePendingPlaceholder = computed(() => isPendingAssistant.value && !hasVi
 
 const normalizeUploadUrl = (rawPath) => {
   if (!rawPath) return null
-  const safePath = rawPath.replace(/\\/g, '/')
+  let safePath = rawPath.replace(/\\/g, '/')
+  
+  // If the path contains 'chat_uploads', extract the relative part and re-build it.
+  // This handles LLM-generated full URLs (like localhost:8000/api/...) and ensures 
+  // they use the current environment's correct API base.
+  if (safePath.includes('chat_uploads/')) {
+    const parts = safePath.split('chat_uploads/')
+    const relative = parts[parts.length - 1]
+    return `${getUploadBase()}/${relative}`.replace(/([^:]\/)\/+/g, '$1')
+  }
+
+  // Fallback for other http links
   if (/^https?:\/\//i.test(safePath)) return safePath
+  
+  // Standard relative path handling
   let relative = safePath
-  relative = relative.replace(/^\.?\/*backend\/chat_uploads\//i, '')
-  relative = relative.replace(/^\/?chat_uploads\//i, '')
-  return `${UPLOAD_BASE}/${relative}`.replace(/([^:]\/)\/+/g, '$1')
+  relative = relative.replace(/^\.?\/*backend\//i, '')
+  return `${getUploadBase()}/${relative}`.replace(/([^:]\/)\/+/g, '$1')
 }
 
 const imageUrls = computed(() => {
-  const content = (props.message.content || '').replace(/\\/g, '/')
+  // 先清理 content 中的所有 localhost URL
+  const rawContent = (props.message.content || '').replace(/\\/g, '/')
+  const content = rawContent.replace(
+    /https?:\/\/[^\s/]+(?::\d+)?\/(?:api\/)?chat_uploads\//gi,
+    '/chat_uploads/'
+  )
+  
   const attachmentUrls = Array.isArray(props.message.files)
     ? props.message.files
         .map((file) => normalizeUploadUrl(file.url || file.file_path))
         .filter(Boolean)
+        .filter((url) => /\.(png|jpe?g|gif|webp)$/i.test(url)) // 只顯示圖片檔案
     : []
   const matches = []
   const addMatches = (regex) => {
     const found = content.match(regex)
     if (found) matches.push(...found)
   }
-  addMatches(/(?:\.\/)?backend\/chat_uploads\/[^\s)]+/gi)
+  addMatches(/(?:\.\/)? backend\/chat_uploads\/[^\s)]+/gi)
   addMatches(/\/chat_uploads\/[^\s)]+/gi)
   addMatches(/https?:\/\/[^\s)]+\/chat_uploads\/[^\s)]+/gi)
 
@@ -104,7 +145,9 @@ const imageUrls = computed(() => {
     .map((item) => normalizeUploadUrl(item))
     .filter((item) => item && /\.(png|jpe?g|gif|webp)$/i.test(item))
   const deduped = Array.from(new Set(cleaned))
-  return deduped.filter((item) => !attachmentUrls.includes(item))
+  const all = Array.from(new Set([...deduped, ...attachmentUrls]))
+  
+  return all
 })
 
 const getFileName = (url) => {

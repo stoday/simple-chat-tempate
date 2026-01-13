@@ -3,17 +3,21 @@ import { ref } from 'vue'
 
 const DEFAULT_CONFIG = {
   branding: {
-    title: 'SimpleChat',
+    title: 'HeranChat',
     brand_icon: 'ph-chat-teardrop-text',
     empty_state_icon: 'ph-sparkle',
     login_subtitle: 'Your premium AI assistant',
   },
   app: {
-    version: '1.0.1',
+    version: '1.1',
   },
   roles: {
     allowed: ['admin', 'user'],
     default_role: 'user',
+  },
+  uploads: {
+    user_extensions: ['.pdf', '.docx', '.md', '.txt', '.csv', '.pptx'],
+    rag_extensions: ['.pdf', '.docx', '.md', '.txt', '.csv', '.pptx'],
   },
   theme: {},
 }
@@ -65,6 +69,7 @@ export const useAppConfigStore = defineStore('appConfig', () => {
           app: { ...DEFAULT_CONFIG.app, ...(data.app || {}) },
           branding: { ...DEFAULT_CONFIG.branding, ...(data.branding || {}) },
           roles: { ...DEFAULT_CONFIG.roles, ...(data.roles || {}) },
+          uploads: { ...DEFAULT_CONFIG.uploads, ...(data.uploads || {}) },
           theme: { ...(data.theme || {}) },
         }
         applyTheme(config.value.theme)
