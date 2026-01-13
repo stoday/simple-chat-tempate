@@ -37,9 +37,14 @@ from .tools import get_agent, clear_agent_cache
 
 # Pre-initialize agent at module level (before any multiprocessing forks)
 # This ensures child processes inherit the cached agent
-print("[MAIN] Pre-loading agent at module level...")
+import os
+from datetime import datetime
+_PROCESS_ID = os.getpid()
+_STARTUP_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+print(f"[MAIN] Process ID: {_PROCESS_ID}, Startup: {_STARTUP_TIME}")
+print(f"[MAIN] Pre-loading agent at module level...")
 _PRELOADED_AGENT = get_agent(stream=True)
-print("[MAIN] Agent pre-loaded successfully")
+print(f"[MAIN] Agent pre-loaded successfully (PID: {_PROCESS_ID})")
 
 load_dotenv()
 
@@ -113,6 +118,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# 進程池生命週期管理
+@app.on_event("startup")
+async def startup_event():
+    """初始化線程池"""
+    global _thread_pool
+    print(f"[POOL] Initializing thread pool with {_THREAD_POOL_SIZE} workers...")
+    _thread_pool = ThreadPoolExecutor(max_workers=_THREAD_POOL_SIZE)
+    # 同時預載入 Agent (雖然在模組等級已執行，但這裡可再次確保)
+    get_agent(stream=True)
+    print(f"[POOL] Thread pool initialized successfully")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """關閉線程池"""
+    global _thread_pool
+    if _thread_pool:
+        print("[POOL] Shutting down thread pool...")
+        _thread_pool.shutdown(wait=True)
+        print("[POOL] Thread pool shut down successfully")
 
 
 class UserResponse(BaseModel):
@@ -302,6 +329,13 @@ DOWNLOAD_LINKS_PLACEHOLDER = "__DOWNLOAD_LINKS__"
 pending_generations: Dict[int, Dict[str, object]] = {}
 # 用於管理 SSE 串流的 Queue 字典
 active_streams: Dict[int, asyncio.Queue] = {}
+
+# 全局線程池：重用線程以確保 Agent Cache 共享 (2026-01-13 改用 ThreadPool)
+import queue
+from concurrent.futures import ThreadPoolExecutor, Future
+
+_THREAD_POOL_SIZE = int(os.environ.get("THREAD_POOL_SIZE", "10"))
+_thread_pool: Optional[ThreadPoolExecutor] = None
 
 
 def _fix_missing_upload_links(text: str) -> str:
@@ -576,8 +610,11 @@ def _run_reply_worker(
     parent_message_id: Optional[int],
     owner_user_id: int,
     owner_display_name: Optional[str],
-    result_queue: multiprocessing.Queue,
+    result_queue: Any,  # queue.Queue
 ) -> None:
+    import threading
+    tid = threading.get_ident()
+    print(f"[WORKER] Processing message in Thread: {tid} (PID: {os.getpid()})")
     try:
         conn = get_connection()
         try:
@@ -1170,7 +1207,7 @@ def schedule_assistant_reply(
     task = loop.create_task(
         run_assistant_reply(message_id, conversation_id, content, files, owner_user_id, owner_display_name)
     )
-    pending_generations[message_id] = {"task": task, "process": None}
+    pending_generations[message_id] = {"task": task, "future": None}
 
 
 async def run_assistant_reply(
@@ -1181,7 +1218,7 @@ async def run_assistant_reply(
     owner_user_id: int,
     owner_display_name: Optional[str],
 ) -> None:
-    process: Optional[multiprocessing.Process] = None
+    future: Optional[Future] = None
     try:
         await asyncio.sleep(SIMULATED_REPLY_DELAY)
         conn = get_connection()
@@ -1193,61 +1230,57 @@ async def run_assistant_reply(
             parent_message_id = parent_row["parent_message_id"] if parent_row else None
         finally:
             conn.close()
-        ctx = multiprocessing.get_context("spawn")
-        result_queue: multiprocessing.Queue = ctx.Queue()
+
+        # 使用標準 Thread-Safe Queue
+        result_queue = queue.Queue()
         files_payload = [
             file.dict() if hasattr(file, "dict") else dict(file)  # type: ignore[arg-type]
             for file in files
         ]
-        process = ctx.Process(
-            target=_run_reply_worker,
-            args=(
-                content,
-                files_payload,
-                conversation_id,
-                parent_message_id,
-                owner_user_id,
-                owner_display_name,
-                result_queue,
-            ),
+
+        # 提交任務到線程池
+        if _thread_pool is None:
+            raise RuntimeError("Thread pool not initialized")
+            
+        future = _thread_pool.submit(
+            _run_reply_worker,
+            content,
+            files_payload,
+            conversation_id,
+            parent_message_id,
+            owner_user_id,
+            owner_display_name,
+            result_queue,
         )
-        process.start()
+
         pending_entry = pending_generations.get(message_id)
         if pending_entry is not None:
-            pending_entry["process"] = process
+            pending_entry["future"] = future # Store future instead of process
 
         reply_payload = None
         # 初始化 SSE 串流 Queue
         active_streams[message_id] = asyncio.Queue()
         
         while True:
-            if process.exitcode is not None:
-                # 即使進程結束，也得把 Queue 裡剩下的東西讀完
-                while not result_queue.empty():
-                    try:
-                        status_label, payload = result_queue.get_nowait()
-                        if status_label == "token":
-                            await active_streams[message_id].put(payload)
-                        elif status_label == "ok":
-                            reply_payload = payload
-                        else:
-                            raise RuntimeError(payload)
-                    except py_queue.Empty:
-                        break
-                break
-
+            # 嘗試讀取 Queue
             try:
                 status_label, payload = result_queue.get_nowait()
                 if status_label == "token":
-                    # 將 token 推送到 SSE Queue
-                    # print(f"DEBUG: pushing token {payload[:10]}...")
                     await active_streams[message_id].put(payload)
                 elif status_label == "ok":
                     reply_payload = payload
-                    break
+                    # 即使收到 ok，也要確認是否還有其他訊息在 queue 中，但在這裡通常 ok 是最後一個
+                elif status_label == "error":
+                     raise RuntimeError(payload)
                 else:
-                    raise RuntimeError(payload)
-            except py_queue.Empty:
+                    raise RuntimeError(f"Unknown status: {status_label}")
+            except queue.Empty:
+                # 如果 queue 是空的且 future 已經完成，表示沒東西了
+                if future.done():
+                    # Check for exception if future raised one uncaught
+                    if future.exception():
+                        raise future.exception()
+                    break
                 await asyncio.sleep(0.05)
         
         # 結束串流
@@ -1334,13 +1367,24 @@ def cancel_pending_generation(message_id: int) -> None:
     entry = pending_generations.pop(message_id, None)
     if not entry:
         return
-    process = entry.get("process")
+    future = entry.get("future")
     task = entry.get("task")
-    if isinstance(process, multiprocessing.Process) and process.is_alive():
-        process.terminate()
-        process.join(timeout=1.0)
+    
+    # Try to cancel the thread future
+    if future and not future.done():
+        cancelled = future.cancel()
+        if not cancelled:
+            print(f"[STOP] Message {message_id}: Future running in thread cannot be force killed. It will finish in background.")
+
     if isinstance(task, asyncio.Task):
         task.cancel()
+        
+    # Signal stream to stop
+    if message_id in active_streams:
+        try:
+            active_streams[message_id].put_nowait(None)
+        except Exception:
+            pass
 
 
 async def get_current_user(

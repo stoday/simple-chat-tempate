@@ -247,9 +247,50 @@ npm run dev
 - Python GIL 提供基本的線程安全保障
 
 ⚠️ **注意事項**：
+
+**關於開發模式的 `--reload` 參數**：
+- **問題**：使用 `uvicorn --reload` 啟動時，任何 Python 檔案的變動（包括編輯器自動存檔）都會觸發 worker 進程重啟
+- **影響**：進程重啟會導致所有 module-level 代碼重新執行，表現為：
+  ```
+  [MAIN] Pre-loading agent at module level...
+  [AGENT CACHE] Building new agent (stream=True)
+  ```
+  每次對話都重新載入 agent，失去緩存優勢
+- **解決方案**：  
+  1. **生產環境**：不要使用 `--reload` 參數  
+     ```powershell
+     uvicorn backend.main:app --host 0.0.0.0 --port 8000
+     ```
+  2. **開發環境**：使用 `--reload-exclude` 排除會頻繁變動的檔案  
+     ```powershell
+     uvicorn backend.main:app --reload \
+       --reload-exclude "*.db" \
+       --reload-exclude "chat_uploads/*" \
+       --reload-exclude "rag_files/*" \
+       --host 0.0.0.0 --port 8000
+     ```
+  3. **使用提供的啟動腳本**：專案根目錄已提供 `start_dev.bat`（開發）和 `start_prod.bat`（生產）
+
+**其他注意事項**：
 - 如果在運行時更新了 LLM 配置（temperature、model 等），需要重啟 server 或調用 `clear_agent_cache()`
 - 每個 worker 進程都會有完整的 agent 副本，注意記憶體使用
 - 高並發時可考慮增加 worker 數量：`uvicorn backend.main:app --workers 4`
+
+**關於 Multiprocessing 的重要發現（2026-01-13）**：
+- **現象**：系統對每個訊息請求都創建新的 `multiprocessing.Process`，導致每次都重新執行模組初始化代碼
+- **影響**：雖然在同一個 worker 進程內 agent cache 有效，但每次請求用不同進程，所以看起來每次都在重新載入
+- **日誌特徵**：
+  ```
+  第1次對話: Worker PID: 11840 → [MAIN] Pre-loading agent...
+  第2次對話: Worker PID: 15908 → [MAIN] Pre-loading agent...  
+  第3次對話: Worker PID: 16188 → [MAIN] Pre-loading agent...
+  ```
+- **解決方案**：參見 `docs/AGENT_CACHE_MULTIPROCESSING.md` 了解詳細分析和多種解決方案
+- **當前狀態**：已啟用 **線程池 (ThreadPoolExecutor)** 方案 (2026-01-13)，確保 Agent Cache 在請求間完全共享。
+
+**推薦改進方向**：
+1. **線程池方案（當前）**：已實作。LLM API 調用是 I/O 密集型，效果良好。
+2. **進程池方案（備選）**：若未來有大量 CPU 密集型操作可考慮遷移。
 
 ### 串流輸出優化
 

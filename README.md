@@ -84,14 +84,46 @@ VITE_UPLOAD_BASE_URL=http://localhost:8000/chat_uploads
 
 ### 啟動後端
 
+本專案提供兩種啟動模式：
+
+#### **開發模式（Development）**
+
+支援熱重載（程式碼修改後自動重啟），適合開發時使用：
+
 ```powershell
-# 確保虛擬環境已啟動
+# 方式 1：使用啟動腳本（推薦）
 cd backend
 .\.venv\Scripts\activate
+cd ..
+.\start_dev.bat
 
-# 啟動 FastAPI 服務
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+# 方式 2：手動啟動
+cd backend
+.\.venv\Scripts\activate
+uvicorn backend.main:app --reload --reload-exclude "*.db" --reload-exclude "chat_uploads/*" --reload-exclude "rag_files/*" --host 0.0.0.0 --port 8000
 ```
+
+#### **生產模式（Production）**
+
+不使用熱重載，確保 Agent Cache 正常運作，適合測試和部署：
+
+```powershell
+# 方式 1：使用啟動腳本（推薦）
+cd backend
+.\.venv\Scripts\activate
+cd ..
+.\start_prod.bat
+
+# 方式 2：手動啟動
+cd backend
+.\.venv\Scripts\activate
+uvicorn backend.main:app --host 0.0.0.0 --port 8000
+```
+
+> ⚠️ **重要提示**：
+> - 開發模式使用 `--reload` 參數時，檔案變更會觸發 worker 重啟，導致 Agent Cache 失效
+> - 如果發現每次對話都重新載入 Agent，請改用生產模式或使用 `--reload-exclude` 排除特定檔案
+> - 生產環境建議使用 Gunicorn + Uvicorn workers 以獲得更好的穩定性
 
 **啟動成功後：**
 - API 文檔（Swagger UI）：`http://localhost:8000/docs`

@@ -617,50 +617,55 @@ def build_agent(stream: bool = False):
 
 
 # Global agent instance with stronger singleton pattern
-class AgentSingleton:
-    _instance = None
-    _agent = None
-    _stream = None
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-    
+# Global agent instance with Thread-Local storage for safety in ThreadPool
+import threading
+
+class AgentThreadLocal(threading.local):
+    """
+    Thread-local storage for Agent.
+    Each thread in the ThreadPool will have its own independent instance of the Agent.
+    This prevents race conditions if the Agent object itself holds state during execution.
+    """
+    def __init__(self):
+        super().__init__()
+        self._agent = None
+        self._stream = None
+
     def get_agent(self, stream: bool = False):
-        """Get or create agent instance with caching."""
         import sys
         
-        # Check if we have a cached agent with matching stream parameter
+        # Check if this thread already has a cached agent
         if self._agent is not None and self._stream == stream:
-            msg = f"[AGENT CACHE] Using cached agent (stream={stream})"
+            tid = threading.get_ident()
+            msg = f"[AGENT CACHE] Using cached agent in Thread {tid} (stream={stream})"
             print(msg, flush=True)
             sys.stdout.flush()
             return self._agent
         
-        # Build new agent
-        msg = f"[AGENT CACHE] Building new agent (stream={stream})"
+        # Build new agent for this thread
+        tid = threading.get_ident()
+        msg = f"[AGENT CACHE] Building new agent for Thread {tid} (stream={stream})"
         print(msg, flush=True)
         sys.stdout.flush()
+        
         agent = build_agent(stream=stream)
         self._agent = agent
         self._stream = stream
         return agent
-    
+
     def clear_cache(self):
-        """Clear agent cache to force rebuild on next get_agent call."""
         self._agent = None
         self._stream = None
 
 
-_singleton = AgentSingleton()
+_thread_local_storage = AgentThreadLocal()
 
 
 def get_agent(stream: bool = False):
-    """Get or create agent instance with caching."""
-    return _singleton.get_agent(stream)
+    """Get or create agent instance for the current thread."""
+    return _thread_local_storage.get_agent(stream)
 
 
 def clear_agent_cache():
-    """Clear agent cache to force rebuild on next get_agent call."""
-    _singleton.clear_cache()
+    """Clear agent cache for the current thread."""
+    _thread_local_storage.clear_cache()
