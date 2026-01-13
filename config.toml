@@ -22,7 +22,7 @@ user_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", "ppt", "pptx"
 rag_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", "ppt", "pptx"]
 
 [app]
-version = "1.1"
+version = "1.2"
 
 [deployment]
 # 部署域名設定 (用於 CORS 與前端自動偵測)
