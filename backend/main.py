@@ -79,10 +79,26 @@ try:
             _config_data = tomli.load(f)
         print(f"[CONFIG] Config loaded, keys: {list(_config_data.keys())}")
         
-        # 讀取部署配置
-        deployment_config = _config_data.get("deployment", {})
-        _allowed_origins = deployment_config.get("frontend_domains", ["http://localhost:5173"])
-        print(f"[CONFIG] Frontend domains: {_allowed_origins}")
+        # 自動從 [server] 區塊構建 CORS 允許列表
+        server_config = _config_data.get("server", {})
+        _allowed_origins = []
+        
+        # 讀取本地開發環境 URL
+        local_config = server_config.get("local", {})
+        if local_config.get("frontend_url"):
+            _allowed_origins.append(local_config["frontend_url"])
+        
+        # 讀取生產環境 URL
+        production_config = server_config.get("production", {})
+        if production_config.get("frontend_url"):
+            _allowed_origins.append(production_config["frontend_url"])
+        
+        # 如果 [server] 區塊沒有配置，則回退到 [deployment].frontend_domains（向後兼容）
+        if not _allowed_origins:
+            deployment_config = _config_data.get("deployment", {})
+            _allowed_origins = deployment_config.get("frontend_domains", ["http://localhost:5173"])
+        
+        print(f"[CONFIG] CORS allowed origins (auto-built from [server]): {_allowed_origins}")
         
         # 讀取品牌配置
         branding_config = _config_data.get("branding", {})
