@@ -6,10 +6,8 @@
 
 ```toml
 [server.local]
-frontend_port = 5173
-backend_port = 8000
-frontend_url = "http://localhost:5173"
-backend_url = "http://localhost:8000"
+frontend_url = "http://localhost:5173"    # Vite 前端開發伺服器
+backend_url = "http://localhost:8000"     # FastAPI 後端伺服器
 
 [server.production]
 frontend_domain = "heranchat.demo-today.org"
@@ -43,8 +41,8 @@ python scripts/sync_config.py
 1. 編輯 `config.toml`:
 ```toml
 [server.local]
-frontend_port = 3000  # 改為 3000
-backend_port = 9000   # 改為 9000
+frontend_url = "http://localhost:3000"    # 改為 3000
+backend_url = "http://localhost:9000"     # 改為 9000
 ```
 
 2. 執行: `python scripts/sync_config.py`

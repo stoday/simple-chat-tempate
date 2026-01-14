@@ -77,13 +77,24 @@ def generate_env_file(config):
 
 def update_cloudflared_config(config):
     """更新 cloudflared config.yml"""
+    from urllib.parse import urlparse
+    
     server = config.get("server", {})
     local = server.get("local", {})
     production = server.get("production", {})
     tunnel_name = server.get("cloudflare_tunnel_name", "heran-tunnel")
     
-    frontend_port = local.get("frontend_port", 5173)
-    backend_port = local.get("backend_port", 8000)
+    # 從 URL 解析 port
+    frontend_url = local.get("frontend_url", "http://localhost:5173")
+    backend_url = local.get("backend_url", "http://localhost:8000")
+    
+    frontend_parsed = urlparse(frontend_url)
+    backend_parsed = urlparse(backend_url)
+    
+    frontend_port = frontend_parsed.port or (443 if frontend_parsed.scheme == 'https' else 80)
+    backend_port = backend_parsed.port or (443 if backend_parsed.scheme == 'https' else 80)
+    
+    # 從 production 獲取域名
     frontend_domain = production.get("frontend_domain", "heranchat.demo-today.org")
     backend_domain = production.get("backend_domain", "api.demo-today.org")
     
