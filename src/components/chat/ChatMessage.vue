@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onMounted, watch, nextTick, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
+import hljs from 'highlight.js'
+import 'highlight.js/styles/atom-one-dark.css' // Premium dark theme
 
 const props = defineProps({
   message: {
@@ -20,44 +22,72 @@ const getUploadBase = () => {
 const md = new MarkdownIt({
   html: true,
   breaks: true,
-  linkify: true
+  linkify: true,
+  highlight: function (str, lang) {
+    const language = lang || 'code'
+    let highlighted = ''
+    
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        highlighted = hljs.highlight(str, { language: lang, ignoreIllegals: true }).value
+      } catch (__) {
+        highlighted = md.utils.escapeHtml(str)
+      }
+    } else {
+      highlighted = md.utils.escapeHtml(str)
+    }
+
+    const label = language.toUpperCase()
+    // 使用 details/summary 實現預設摺疊
+    return `<details class="code-block-details">
+              <summary class="code-block-summary">
+                <div class="summary-content">
+                  <i class="ph ph-terminal-window"></i>
+                  <span class="lang-label">${label} SOURCE</span>
+                </div>
+                <i class="ph ph-caret-down chevron"></i>
+              </summary>
+              <pre class="hljs"><code>${highlighted}</code></pre>
+            </details>`
+  }
 })
 
 
 const parsedContent = computed(() => {
-  let raw = (props.message.content || '').replace(/\\n/g, '\n')
+  let raw = (props.message.content || '')
   
-  // Extract LAST occurrence of Answer action_input (in case of multiple LLM calls)
-  const answerPattern = /"action"\s*:\s*"[^"]*[Aa]nswer[^"]*"[\s\S]*?"action_input"\s*:\s*"([\s\S]*?)(?:"\s*}|$)/g
+  // 1. 優先嘗試從 JSON 中提取 (適用於結構化的 Answer)
+  // 改進 Regex，尋找 "action_input" 並停止在第一個未轉義的引號後面
+  // 這個 Regex 能夠正確處理 JSON 字串中的轉義字元 (如 \")
+  const answerPattern = /"action_input"\s*:\s*"((\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|[^"\\])*)"/g
   
-  let matches = []
-  let match
+  let match;
+  let lastContent = null;
   while ((match = answerPattern.exec(raw)) !== null) {
-    matches.push(match[1])
+    lastContent = match[1]; // 取得第一個捕獲組（引號內的內容）
   }
-  
-  if (matches.length > 0) {
-    // Take the LAST match (in case of multiple Answer actions)
-    let answer = matches[matches.length - 1]
-    // Clean up escaped characters  
-    answer = answer.replace(/\\n/g, '\n')
-    answer = answer.replace(/\\"/g, '"')
-    answer = answer.replace(/\\t/g, '\t')
-    // Remove trailing JSON artifacts
-    answer = answer.replace(/["}]+\s*$/, '')
+
+  if (lastContent !== null) {
+    // 還原 JSON 轉義字元
+    let answer = lastContent
+      .replace(/\\n/g, '\n')
+      .replace(/\\"/g, '"')
+      .replace(/\\t/g, '\t')
+      .replace(/\\\\/g, '\\');
+    
     return { finalAnswer: answer.trim() }
   }
-  
-  // Check if this is AI response (contains JSON markers) or user message
+
+  // 2. 如果沒匹配到 action_input，但在 raw 裡發現有 JSON 結構，可能還在思考中，回傳空
   const isAIResponse = /"action"\s*:/.test(raw) || /"thought"\s*:/.test(raw)
   
   if (isAIResponse) {
-    // AI is thinking/searching, don't show anything yet
+    // AI 正在思考中，不顯示中間的 JSON 文字
     return { finalAnswer: '' }
   }
   
-  // User message or simple response
-  return { finalAnswer: raw.trim() }
+  // 3. 一般訊息處理 (例如使用者訊息或非 JSON 格式的回覆)
+  return { finalAnswer: raw.replace(/\\n/g, '\n').trim() }
 })
 
 const renderedContent = computed(() => {
@@ -455,23 +485,89 @@ watch(renderedContent, async () => {
   margin-bottom: 0;
 }
 :deep(.markdown-body code) {
-  background: rgba(255,255,255,0.1); /* Lighter background for code inline */
+  background: rgba(255,255,255,0.1); 
   padding: 0.1rem 0.3rem;
   border-radius: var(--radius-sm);
   font-family: monospace;
-  color: var(--accent); /* Keep accent color for code or maybe white? Let's keep accent for pop */
+  color: var(--accent);
 }
-:deep(.markdown-body pre) {
-  background: #000000;
-  padding: var(--space-4);
+
+/* Collapsible Code Block Styles */
+:deep(.code-block-details) {
+  background: #21252b;
   border-radius: var(--radius-md);
-  overflow-x: auto;
   margin: var(--space-4) 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  transition: all var(--transition-normal);
 }
+
+:deep(.code-block-details[open]) {
+  border-color: rgba(139, 92, 246, 0.3);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+:deep(.code-block-summary) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  cursor: pointer;
+  list-style: none; /* Hide default triangle */
+  user-select: none;
+  background: rgba(255, 255, 255, 0.03);
+  transition: background var(--transition-fast);
+}
+
+:deep(.code-block-summary::-webkit-details-marker) {
+  display: none; /* Hide default triangle in Chrome */
+}
+
+:deep(.code-block-summary:hover) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:deep(.summary-content) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+:deep(.summary-content i) {
+  font-size: 1rem;
+  color: var(--primary);
+}
+
+:deep(.chevron) {
+  font-size: 0.9rem;
+  color: var(--text-tertiary);
+  transition: transform var(--transition-normal);
+}
+
+:deep(.code-block-details[open] .chevron) {
+  transform: rotate(180deg);
+  color: var(--primary);
+}
+
+:deep(.markdown-body pre) {
+  background: #282c34;
+  padding: var(--space-4);
+  margin: 0; /* Align perfectly inside details */
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  overflow-x: auto;
+}
+
 :deep(.markdown-body pre code) {
-  color: #e2e8f0; /* Light grey for code blocks */
+  color: #abb2bf;
   background: transparent;
   padding: 0;
+  font-family: 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
 }
 :deep(.markdown-body table) {
   width: 100%;

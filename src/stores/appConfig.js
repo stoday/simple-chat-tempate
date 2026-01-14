@@ -9,7 +9,7 @@ const DEFAULT_CONFIG = {
     login_subtitle: 'Your premium AI assistant',
   },
   app: {
-    version: '1.2',
+    version: '1.3',
   },
   roles: {
     allowed: ['admin', 'user'],
@@ -57,7 +57,7 @@ export const useAppConfigStore = defineStore('appConfig', () => {
 
   const loadConfig = async () => {
     try {
-      const base = (window.__API_BASE__ || '').replace(/\/$/, '')
+      const base = (window.__API_BASE__ || import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
       const apiBase = base.endsWith('/api') ? base : `${base}/api`
       const response = await fetch(`${apiBase}/config`)
       if (!response.ok) {

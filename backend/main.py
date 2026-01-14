@@ -341,20 +341,36 @@ _thread_pool: Optional[ThreadPoolExecutor] = None
 def _fix_missing_upload_links(text: str) -> str:
     if not text:
         return text
+    # 改進 Regex：排除引號、反斜線，確保不誤抓 \n 等跳脫字元
     patterns = [
-        r"(?:\.\/)?backend[\/\\]+chat_uploads[\/\\]+[^\s)\]]+",
-        r"[\/\\]+chat_uploads[\/\\]+[^\s)\]]+",
-        r"https?:\/\/[^\s)\]]+?[\/\\]+chat_uploads[\/\\]+[^\s)\]]+",
+        r"(?:\.\/)?backend[\/\\]+chat_uploads[\/\\]+[^\s\"'()\]\\]+",
+        r"[\/\\]+chat_uploads[\/\\]+[^\s\"'()\]\\]+",
+        r"https?:\/\/[^\s\"'()\]\\]+?[\/\\]+chat_uploads[\/\\]+[^\s\"'()\]\\]+",
     ]
     matches = []
     for pattern in patterns:
         matches.extend(re.findall(pattern, text))
-    cleaned = []
+    
+    # 移除重複並排序(長度長的優先處理，避免短路徑先被替換)
+    matches = sorted(list(set(matches)), key=len, reverse=True)
+    
     for raw in matches:
-        cleaned.append(raw.rstrip(").,;]"))
-    for raw in set(cleaned):
-        # 先將反斜線轉為正斜線以便統一處理
-        norm_raw = raw.replace("\\", "/")
+        # 清理結尾的標點符號，但要小心不要把 \n 的一部分切掉
+        # 實際上如果 raw 結尾是 \n (字面值)，rstrip 也許會切掉 n，所以我們要更精確
+        clean_raw = raw
+        for suffix in [").", "),", ");", "].", "],", "];", ".", ",", ";", ")", "]"]:
+             if clean_raw.endswith(suffix):
+                 clean_raw = clean_raw[:-len(suffix)]
+                 break
+        
+        # 核心修復：如果 clean_raw 中包含 \n (字面字元)，通常代表它抓過頭了，切斷它
+        if "\\n" in clean_raw:
+            clean_raw = clean_raw.split("\\n")[0]
+        if "/n" in clean_raw: # 防止已經被轉過的
+            clean_raw = clean_raw.split("/n")[0]
+
+        # 先將反斜線轉為正斜線以便統一處理 (針對 clean_raw 動作，不影響原始 text 的其餘部分)
+        norm_raw = clean_raw.replace("\\", "/")
         rel = None
         if "/chat_uploads/" in norm_raw:
             rel = norm_raw.split("/chat_uploads/", 1)[1]
@@ -366,19 +382,26 @@ def _fix_missing_upload_links(text: str) -> str:
         if not rel:
             continue
             
-        # 移除可能帶有的隨機後綴 (如果有的話)，先確認檔案是否存在
+        # 檢查檔案是否存在，或尋找最新的時間戳版本
         current_path = UPLOAD_ROOT / rel
         if not current_path.exists():
-            # 嘗試找尋帶有時間戳的最新檔案
-            candidates = list(current_path.parent.glob(f"{current_path.stem}_*{current_path.suffix}"))
+            # 嘗試移除可能抓錯的結尾字元再次檢查
+            stem = current_path.stem
+            suffix = current_path.suffix
+            candidates = list(current_path.parent.glob(f"{stem}_*{suffix}"))
             if candidates:
                 latest = max(candidates, key=lambda path: path.stat().st_mtime)
                 rel = latest.relative_to(UPLOAD_ROOT).as_posix()
+            else:
+                # 如果連 candidate 都沒有，可能這個路徑根本抓錯了，略過
+                continue
         
-        # 統一轉換為以 /chat_uploads/ 開頭的相對路徑，讓前端根據目前的 Domain 動態解析
+        # 統一轉換為 /chat_uploads/ 開頭
         new_url = f"/chat_uploads/{rel}"
-        if raw != new_url:
-            text = text.replace(raw, new_url)
+        if clean_raw != new_url:
+            # 只替換精確匹配到的部分
+            text = text.replace(clean_raw, new_url)
+            
     return text
 
 
@@ -1053,7 +1076,9 @@ def build_reply(
 - 現在時間：{datetime.now():%Y年%m月%d日 %H:%M}
 - 你是一個 GPT OSS 120B 的大語言模型所建構的應用服務系統，可以使用多種工具與參考資料來回答使用者的問題。
 - 當前使用者：id={owner_user_id}, name={display_name}, role={role}
-- 對話上傳目錄：{user_upload_dir} (若執行 Python 產生檔案請優先存放於此)
+- 對話上傳目錄：{user_upload_dir} (若執行 Python 產生的檔案，PDF、Word、圖片等請放在此目錄。程式檔或是指令檔請勿放在此目錄)
+- 如果回答問題的中間有使用到 Python 程式碼或是 SQL 指令，請將 Python 程式碼或 SQL 指令直接至於回覆的最下方，說明回答問題的時候有使用到這些程式或指令，方便使用者了解或除錯。Python 程式碼顯示時請用 ```python ... ``` 包起來，SQL 指令則請用 ```sql ... ``` 包起來，以便系統進行語法高亮顯示。
+- **重要 SQL 指令規範**：在執行任何 SQL 查詢前，**禁止自行猜測資料表名稱**（例如 products, sales）。你「必須」先呼叫 `check_rules_tool` 閱讀業務規則，並呼叫 `get_db_table_content` 取得實際的資料表與欄位名稱。若未確認 Schema 就執行 SQL 導致錯誤，將被視為任務失敗。
 
 # 上傳檔案資訊 (可用於 upload_file_qa_tool)
 {files_block}

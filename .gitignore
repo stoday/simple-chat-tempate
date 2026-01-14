@@ -6,7 +6,8 @@ chat_uploads
 akasha-package
 backend/rag_files/
 chromadb/
-rag_uploads
+rag_uploads/
+backend/codegen/
 
 # Logs
 logs

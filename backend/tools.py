@@ -4,6 +4,9 @@ import akasha.agent.agent_tools as at
 from .rag_state import get_rag_data_sources, get_rag_instance
 import pandas as pd
 import os
+import re
+import subprocess
+import sys
 from pathlib import Path
 from datetime import datetime
 from typing import List
@@ -358,108 +361,131 @@ check_rules_tool = akasha.create_tool(
     func=check_rules
 )
 
-# 定義一個工具來執行 Python 代碼
+import ast
+
+# 定義一個工具來執行 Python 代碼 (Subprocess 穩定版)
 def exec_python_code(code, output_path: str = "./backend/chat_uploads/"):
-    rich.print("Executing exec_python_code tool...")
-    def _exec(target_code: str):
-        exec_env = {}
-        exec(target_code, exec_env, exec_env)
-        exec_env.pop("__builtins__", None)
-        return exec_env  # 返回執行後的本地變量字典
-
-    def _apply_timestamp_to_file_path(exec_env: dict):
-        file_path = exec_env.get("file_path")
-        if not isinstance(file_path, str) or not file_path.strip():
-            return exec_env, None
-        path = Path(file_path)
-        if re.search(r"_\d{8}_\d{6}$", path.stem):
-            return exec_env, None
-        if not path.exists() and not path.is_absolute():
-            output_dir = Path(output_path)
-            candidate = output_dir / path
-            if candidate.exists():
-                path = candidate
-        if not path.exists():
-            return exec_env, None
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        candidate = path.with_name(f"{path.stem}_{timestamp}{path.suffix}")
-        counter = 1
-        while candidate.exists():
-            candidate = path.with_name(
-                f"{path.stem}_{timestamp}_{counter}{path.suffix}"
-            )
-            counter += 1
-        path.rename(candidate)
-        # 使用 .as_posix() 確保輸出為正斜線，避免 Windows 路徑的反斜線在後續處理被誤認為跳脫字元 (如 \t)
-        posix_path = candidate.as_posix()
-        exec_env["file_path"] = posix_path
-        return exec_env, posix_path
-
+    rich.print("Executing exec_python_code tool (subprocess mode)...")
+    
+    # 1. 確保目錄存在
+    output_dir = Path(output_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    codegen_dir = Path("./backend/codegen")
+    codegen_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 2. 準備腳本檔案
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    script_file = codegen_dir / f"script_{timestamp}.py"
+    
+    # 3. 寫入程式碼（具備強大的自動解轉義邏輯）
     try:
-        # 先直接嘗試執行原始字串
-        exec_env = _exec(code)
-        exec_env, updated_path = _apply_timestamp_to_file_path(exec_env)
-        output = str(exec_env)
-        if updated_path:
-            output += f"\nfile_path: {updated_path}"
-        return output
-    except SyntaxError:
-        # 若因為跳脫字元造成語法錯誤，嘗試將行分隔的 \\n 替換成真正換行（不動字串內的 '\n' 常值）
-        if isinstance(code, str):
-            import re
+        fixed_code = code
+        if isinstance(fixed_code, str):
+            # 針對 LLM 可能產生的雙重或多重轉義進行循環修復
+            # 我們會不斷尝试還原，直到程式碼可以被正確解析為止
+            max_attempts = 3
+            current_attempt = 0
+            while current_attempt < max_attempts:
+                try:
+                    # 嘗試解析語法，如果成功代表程式碼格式已正確
+                    ast.parse(fixed_code)
+                    break
+                except SyntaxError:
+                    # 如果語法出錯且包含反斜線，嘗試進行一次符號還原
+                    if "\\" in fixed_code:
+                        new_code = fixed_code.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+                        if new_code == fixed_code:
+                            break
+                        fixed_code = new_code
+                    else:
+                        break
+                current_attempt += 1
 
-            fixed = re.sub(r"\\n(?=[ \t]*[^\s])", "\n", code)
-            fixed = fixed.replace("\\t", "\t")
-            try:
-                exec_env = _exec(fixed)
-                exec_env, updated_path = _apply_timestamp_to_file_path(exec_env)
-                output = str(exec_env)
-                if updated_path:
-                    output += f"\nfile_path: {updated_path}"
-                return output
-            except Exception as e:
-                print(traceback.format_exc())
-                return f"執行 Python 代碼時發生錯誤: {e}"
+        with open(script_file, "w", encoding="utf-8") as f:
+            f.write(fixed_code)
+    except Exception as e:
+        return f"建立腳本時發生錯誤: {e}"
+
+    # 4. 執行腳本並擷取輸出
+    try:
+        # 設定環境變數確保輸出為 UTF-8
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        
+        proc_result = subprocess.run(
+            [sys.executable, str(script_file)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            cwd=os.getcwd(),
+            env=env
+        )
+        
+        stdout = proc_result.stdout
+        stderr = proc_result.stderr
+        
+        # 5. 後處理：從輸出中擷取結果與檔案路徑
+        final_output_lines = [f"--- 執行輸出 ---", stdout]
+        if stderr:
+            final_output_lines.extend(["--- 錯誤訊息 ---", stderr])
+            
+        # 尋找輸出中提到的路徑或 file_path
+        potential_paths = re.findall(r"(?:file_path|path)[\s:=]+['\"]?([a-zA-Z0-9\._\-\/\\:]+)['\"]?", stdout, re.I)
+        updated_files = []
+        
+        for p in set(potential_paths):
+            path_obj = Path(p)
+            if not path_obj.is_absolute() and not path_obj.exists():
+                path_obj = output_dir / path_obj
+            
+            if path_obj.exists() and path_obj.is_file():
+                # 確保在 output_path 內且尚未加上時間標記
+                if not re.search(r"_\d{8}_\d{6}", path_obj.stem):
+                    new_name = f"{path_obj.stem}_{timestamp}{path_obj.suffix}"
+                    new_path = path_obj.with_name(new_name)
+                    try:
+                        path_obj.rename(new_path)
+                        updated_files.append(new_path.as_posix())
+                    except Exception:
+                        updated_files.append(path_obj.as_posix())
+                else:
+                    updated_files.append(path_obj.as_posix())
+
+        if updated_files:
+            final_output_lines.append("\n--- 生成檔案路徑 (已套用時間戳) ---")
+            for f_path in updated_files:
+                final_output_lines.append(f_path)
+                
+        return "\n".join(final_output_lines)
+
+    except subprocess.TimeoutExpired:
+        return "錯誤：程式執行超過 60 秒，已強制終止。"
     except Exception as e:
         print(traceback.format_exc())
-        return f"執行 Python 代碼時發生錯誤: {e}"
+        return f"執行過程中發生系統錯誤: {e}"
+
 
 exec_python_tool = akasha.create_tool(
     tool_name="exec_python_code",
     tool_description="""
-    #工具說明
-    這是一個執行 Python 代碼的工具，可用來處理資料或進行計算。參數有：
-    1. code: 欲執行的 Python 程式碼字串。
-    2. output_path: 產生檔案的存放目錄，預設為 ./backend/chat_uploads/ 。
+    # 工具說明
+    這是一個在獨立環境中執行 Python 程式碼的工具。適合用於複雜計算、資料分析、繪製圖表。
     
-    # 指令規範 (重要)
-    1) 程式碼必須完整，包含必要的 import。
-    2) **換行符號的正確使用**（非常重要）：
-       - 在 Python 字串**內部**（如 f-string 內容、print 的訊息等），使用 `\\n` 來表示換行
-         範例：`message = "第一行\\n第二行"`
-       - 在 Python **程式碼邏輯**中（如 split 參數、比較運算等），使用 `\n` （單反斜線）來表示換行
-         正確：`lines = text.split('\n')`
-         錯誤：`lines = text.split('\\n')` ← 這會分割字面值 `\n` 而不是換行符號
-       - 整段程式碼必須是「單一字串」，各行之間用 `\\n` 連接
-    3) **避免使用內嵌的多行字串**：
-       - 不要在程式碼中使用三引號字串 `\"\"\"...\"\"\"`，改用 `\\n` 連接的單行字串
-       - 不要在字串內部放入實際的換行，所有邏輯換行用 `\\n` 表達
-    4) 結果收錄：
-       - 計算結果請存入變數 `result` 並 `print(result)`。
-       - 若有產生檔案，請存放在 `./backend/chat_uploads/` 並將路徑存入變數 `file_path` 後 `print(file_path)`。
-    5) **繪製圖表時的中文字體設定**（重要）：
-       - **必須使用 matplotlib.font_manager 載入字體檔案**
-       - 字體檔案名稱：`TaipeiSansTCBeta-Regular.ttf`
-       - **錯誤做法**：`plt.rcParams['font.sans-serif'] = ['TaipeiSansTCBeta-Regular']` ← 這會失敗！
-       - **正確做法**：使用下方範例的方式
-    6) 避免互動式指令 (如 input()) 或無限迴圈。
+    # 執行環境規範
+    1) **寫作指南**：請像撰寫標準 .py 檔案一樣編寫程式碼。可以自由使用多行字串 `\"\"\"...\"\"\"`。
+    2) **存檔路徑**：產出的檔案請固定存放在 `./backend/chat_uploads/`。
+    3) **結果回傳**：
+       - 請務必將最終計算結果透過 `print()` 輸出到螢幕。
+       - 若產生了檔案，請 `print(f'file_path: {path}')` 以便追蹤並提供下載。
+    4) **繪圖規范**：
+       - 使用 matplotlib 繪圖，並務必透過 `fm.FontProperties(fname='TaipeiSansTCBeta-Regular.ttf')` 設定中文字體。
+    5) **常用函式庫**：提供 pandas, matplotlib, numpy, statsmodels, openpyxl 等。
     
-    範例 1（處理資料，注意 split 中是 `\n` 不是 `\\n`）：
-    code: "import pandas as pd\\ndata = 'A,B\\nX,Y'\\nlines = data.split('\n')\\nprint(lines)"
-    
-    範例 2（繪製圖表，正確的中文字體設定）：
-    code: "import matplotlib.pyplot as plt\\nimport matplotlib.font_manager as fm\\n\\n# 載入字體\\nfont_path = 'TaipeiSansTCBeta-Regular.ttf'\\nfont_prop = fm.FontProperties(fname=font_path)\\n\\n# 繪圖\\nplt.figure(figsize=(10, 6))\\nplt.bar(['產品A', '產品B'], [100, 200])\\nplt.xlabel('產品名稱', fontproperties=font_prop)\\nplt.ylabel('數量', fontproperties=font_prop)\\nplt.title('銷售統計', fontproperties=font_prop)\\n\\n# 設定坐標軸刻度字體\\nax = plt.gca()\\nfor label in ax.get_xticklabels() + ax.get_yticklabels():\\n    label.set_fontproperties(font_prop)\\n\\nfile_path = './backend/chat_uploads/chart.png'\\nplt.savefig(file_path)\\nprint(file_path)"
+    # 限制
+    - 任務執行限時 60 秒。
+    - 生成的腳本會儲存在 `./backend/codegen/` 目錄中。
     """,
     func=exec_python_code
 )

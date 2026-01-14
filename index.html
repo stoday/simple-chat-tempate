@@ -24,16 +24,19 @@
             window.__API_BASE__ = protocol + '//api.demo-today.org';
           }
         } else if (hostname === 'localhost' || hostname === '127.0.0.1') {
-          // 本地開發環境
-          window.__API_BASE__ = 'http://localhost:8000';
+          // 本地開發環境：不設定 __API_BASE__，讓程式使用 .env 的設定
+          console.log('[API Config] Localhost detected, skipping auto-config to use .env');
+          return;
         } else {
           // 內部網路環境或其他網域：自動鎖定目前 Host 的 8000 埠
           window.__API_BASE__ = protocol + '//' + hostname + ':8000';
         }
         
         // 確保結尾沒有斜線
-        window.__API_BASE__ = window.__API_BASE__.replace(/\/$/, '');
-        console.log('[API Config] Base URL set to:', window.__API_BASE__);
+        if (window.__API_BASE__) {
+          window.__API_BASE__ = window.__API_BASE__.replace(/\/$/, '');
+          console.log('[API Config] Base URL set to:', window.__API_BASE__);
+        }
       })();
     </script>
     <script type="module" src="/src/main.js"></script>

@@ -22,15 +22,17 @@ user_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", "ppt", "pptx"
 rag_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", "ppt", "pptx"]
 
 [app]
-version = "1.2"
+version = "1.3"
 
 [deployment]
 # 部署域名設定 (用於 CORS 與前端自動偵測)
 # 修改這些設定後需要重啟後端服務
-frontend_domains = [
-    "https://heranchat.demo-today.org",
-    "http://localhost:5173"
-]
+# Ex:
+# frontend_domains = [
+#     "https://heranchat.demo-today.org",
+#     "http://localhost:5173"
+# ]
+frontend_domains =['http://localhost:5174']
 # API 域名 (前端會根據 frontend_domain 自動對應)
 # 格式: "frontend前綴" = "api域名"
 api_domain_mapping = { "heranchat" = "api" }
