@@ -7,6 +7,7 @@ import { useAppConfigStore } from '../stores/appConfig'
 import ChatMessage from '../components/chat/ChatMessage.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import SidebarItem from '../components/layout/SidebarItem.vue'
+import { shouldDismissModal } from '../services/modalInteraction'
 
 // Stores
 const chatStore = useChatStore()
@@ -96,6 +97,7 @@ const modalType = ref('alert') // 'alert', 'confirm', 'prompt'
 const modalMessage = ref('')
 const modalInput = ref('')
 const modalCallback = ref(null)
+const modalPointerStartedInside = ref(false)
 
 const showInPageAlert = (message) => {
   modalType.value = 'alert'
@@ -137,6 +139,17 @@ const handleModalCancel = async () => {
   }
   showModal.value = false
   modalCallback.value = null
+}
+
+const handleModalPointerDown = (event) => {
+  modalPointerStartedInside.value = event.target !== event.currentTarget
+}
+
+const handleModalOverlayClick = (event) => {
+  const startedInside = modalPointerStartedInside.value
+  modalPointerStartedInside.value = false
+  if (!shouldDismissModal(event, startedInside)) return
+  void handleModalCancel()
 }
 
 const handleDeleteChat = (id) => {
@@ -299,7 +312,9 @@ const handleReconnect = async () => {
     </main>
 
     <!-- Custom Modal Dialog -->
-    <div v-if="showModal" class="modal-overlay" @click="handleModalCancel">
+    <div v-if="showModal" class="modal-overlay"
+         @pointerdown="handleModalPointerDown"
+         @click="handleModalOverlayClick">
       <div class="modal-dialog" @click.stop>
         <div class="modal-header">
           <h3>{{ modalType === 'confirm' ? 'Confirm' : modalType === 'prompt' ? 'Input Required' : 'Alert' }}</h3>
