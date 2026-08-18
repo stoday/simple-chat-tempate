@@ -751,7 +751,8 @@ const saveLlmConfig = async () => {
       <form class="form-grid" @submit.prevent="saveLlmConfig">
         <label>
           Model Name
-          <input type="text" v-model="llmForm.model_name" placeholder="gemini:gemini-2.5-flash" />
+          <input type="text" v-model="llmForm.model_name" placeholder="remote:http://localhost:11434/v1@gemma3-24b" />
+          <small class="field-help">Examples: gemini:gemini-2.5-flash, openai:gpt-4o, remote:http://localhost:11434/v1@gemma3-24b</small>
         </label>
         <label>
           Temperature ({{ llmForm.temperature }})
@@ -822,6 +823,11 @@ label {
   flex-direction: column;
   gap: 0.35rem;
   font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.field-help {
+  font-size: 0.8rem;
   color: var(--text-secondary);
 }
 

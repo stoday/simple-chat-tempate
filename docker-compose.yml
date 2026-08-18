@@ -1,18 +1,34 @@
 services:
-  heranchat:
-    # Use the image you built locally, or override it with HERANCHAT_IMAGE.
-    image: ${HERANCHAT_IMAGE:-heranchat:latest}
-    container_name: heranchat
-    restart: unless-stopped
-    ports:
-      - "${HERANCHAT_PORT:-8000}:8000"
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: simplechat-backend
     env_file:
       - .env
     environment:
-      # Keep the SQLite database outside the container filesystem.
       SIMPLECHAT_DB_PATH: /app/data/simplechat.db
+      CHAT_UPLOAD_ROOT: /app/data/chat_uploads
+      RAG_UPLOAD_ROOT: /app/data/rag_files
     volumes:
-      - heranchat_data:/app/data
+      - simplechat_data:/app/data
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_UPLOAD_BASE_URL: /chat_uploads
+    container_name: simplechat-frontend
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    restart: unless-stopped
 
 volumes:
-  heranchat_data:
+  simplechat_data:

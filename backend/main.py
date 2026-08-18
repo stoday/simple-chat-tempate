@@ -289,6 +289,35 @@ class LlmConfigUpdateRequest(BaseModel):
     max_output_tokens: Optional[int] = None
     system_prompt: Optional[str] = None
 
+    @validator("model_name")
+    def validate_model_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        model_name = value.strip()
+        if not model_name:
+            raise ValueError("model_name cannot be empty")
+        if any(ch.isspace() for ch in model_name):
+            raise ValueError("model_name cannot contain whitespace")
+
+        if model_name.startswith("remote:"):
+            remote_target = model_name[len("remote:") :]
+            if "@" not in remote_target:
+                raise ValueError("remote model format must be remote:http(s)://host[:port][/path]@model")
+            endpoint, remote_model = remote_target.rsplit("@", 1)
+            if not remote_model:
+                raise ValueError("remote model name is required")
+            parsed = urlparse(endpoint)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("remote endpoint must be a valid http/https URL")
+            return model_name
+
+        if ":" not in model_name:
+            raise ValueError("model_name must be in provider:model format")
+        provider, provider_model = model_name.split(":", 1)
+        if not provider or not provider_model:
+            raise ValueError("model_name must be in provider:model format")
+        return model_name
+
 
 @dataclass
 class AssistantGeneratedFile:
@@ -1861,11 +1890,7 @@ def get_llm_config(
     row = db.execute("SELECT * FROM llm_config WHERE id = 1").fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="LLM config not found")
-    
-    data = dict(row)
-    # [TEMPORARY DECOUPLING] Display fake model name to frontend
-    data["model_name"] = "openai:gpt-oss-120b"
-    return LlmConfigResponse(**data)
+    return LlmConfigResponse(**dict(row))
 
 
 @app.patch("/api/admin/llm-config", response_model=LlmConfigResponse)
@@ -1877,7 +1902,7 @@ def update_llm_config(
     require_admin(current_user)
     updates = []
     params: List[Any] = []
-    if payload.model_name is not None and payload.model_name != "openai:gpt-oss-120b":
+    if payload.model_name is not None:
         updates.append("model_name = ?")
         params.append(payload.model_name)
     if payload.temperature is not None:
@@ -1903,10 +1928,7 @@ def update_llm_config(
     db.commit()
     
     row = db.execute("SELECT * FROM llm_config WHERE id = 1").fetchone()
-    data = dict(row)
-    # [TEMPORARY DECOUPLING] Display fake model name to frontend
-    data["model_name"] = "openai:gpt-oss-120b"
-    return LlmConfigResponse(**data)
+    return LlmConfigResponse(**dict(row))
 
 
 @app.get("/api/conversations", response_model=List[ConversationResponse])
