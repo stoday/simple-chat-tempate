@@ -30,8 +30,8 @@ version = "1.3"
 [server]
 # 本地開發環境
 [server.local]
-frontend_url = "http://localhost:5174"    # Vite 前端開發伺服器
-backend_url = "http://localhost:8001"     # FastAPI 後端伺服器
+frontend_url = "http://localhost:5173"    # Vite 前端開發伺服器
+backend_url = "http://localhost:8000"     # FastAPI 後端伺服器
 
 # 生產環境（部署到公網時使用）
 # 說明：
@@ -60,16 +60,6 @@ backend_url = "https://api.demo-today.org"
 
 # Cloudflare Tunnel 名稱（用於自動更新 cloudflared config）
 cloudflare_tunnel_name = "heran-tunnel"
-
-[deployment]
-# 後端會自動從 [server.local] 和 [server.production] 讀取 frontend_url 來構建 CORS 白名單
-# 需要再手動維護 frontend_domains 列表，只需要修改上方 [server] 區塊的 URL 即可
-
-# API 域名 (前端會根據 frontend_domain 自動對應)
-# 格式: "frontend前綴" = "api域名"
-api_domain_mapping = { heranchat = "api" }
-# 預設 API 域名 (用於非特定前綴的情況)
-default_api_domain = "api.demo-today.org"
 
 [theme]
 # Choose a preset: "tech", "warm", "minimal"

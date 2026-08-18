@@ -26,17 +26,17 @@ backend_url = "https://api.demo-today.org"
 cloudflare_tunnel_name = "heran-tunnel"
 ```
 
-### 自動生成的檔案
+### 同源 API 路由
 
-以下檔案會由 `scripts/sync_config.py` 自動生成，**請勿手動編輯 URL 相關設定**：
+前端不從 `.env` 讀取 API URL，也不直接讀取 `config.toml`。瀏覽器固定使用
+`/api/*` 與 `/chat_uploads/*`：
 
-1. **`.env`** - 前端環境變數
-   - `VITE_API_BASE_URL`
-   - `VITE_UPLOAD_BASE_URL`
-   - （其他 API keys 等會保留）
+- 本機開發由 `vite.config.js` 代理到 `localhost:8000`。
+- Docker 部署由 `nginx.conf` 代理到 `backend:8000`。
+- `.env` 只保存後端機密資料與執行環境設定。
 
-2. **`~/.cloudflared/config.yml`** - Cloudflare Tunnel 配置
-   - 服務映射設定
+`scripts/sync_config.py` 只會依 `config.toml` 更新
+`~/.cloudflared/config.yml`，不會再產生或修改 `.env`。
 
 ## 使用方式
 
@@ -49,7 +49,8 @@ cloudflare_tunnel_name = "heran-tunnel"
 python scripts/sync_config.py
 ```
 
-3. 根據提示重新啟動相關服務
+3. 根據提示重新啟動相關服務。實際監聽埠仍由 Uvicorn 啟動命令與
+   `vite.config.js` 決定，修改時必須保持一致。
 
 ### 範例：修改本地開發 port
 
@@ -58,18 +59,18 @@ python scripts/sync_config.py
 1. 編輯 `config.toml`:
 ```toml
 [server.local]
-frontend_port = 3000
-backend_port = 8080
 frontend_url = "http://localhost:3000"
 backend_url = "http://localhost:8080"
 ```
 
-2. 執行同步：
+2. 同步修改 Uvicorn 啟動命令與 `vite.config.js` 的 proxy target。
+
+3. 如使用 Cloudflare Tunnel，執行同步：
 ```powershell
 python scripts/sync_config.py
 ```
 
-3. 重新啟動服務：
+4. 重新啟動服務：
 ```powershell
 # 重啟後端
 python -m backend.main
@@ -92,28 +93,23 @@ frontend_url = "https://chat.example.com"
 backend_url = "https://api.example.com"
 ```
 
-2. 同時更新 `[deployment]` 區塊的 CORS 設定：
-```toml
-[deployment]
-frontend_domains = [
-    "https://chat.example.com",
-    "http://localhost:5173"
-]
-default_api_domain = "api.example.com"
-```
-
-3. 執行同步腳本並重啟服務
+2. 執行同步腳本並重啟後端與 Cloudflare Tunnel。後端會直接從
+   `[server.local]` 和 `[server.production]` 的 `frontend_url` 建立 CORS 白名單。
 
 ## 檔案關聯圖
 
 ```
 config.toml (唯一來源)
-    ├─> .env (自動生成)
-    │   └─> 前端 Vite 使用
-    ├─> ~/.cloudflared/config.yml (自動生成)
+    ├─> ~/.cloudflared/config.yml (sync_config.py 生成)
     │   └─> Cloudflare Tunnel 使用
     └─> backend/main.py 直接讀取
         └─> CORS 設定使用
+
+前端
+    ├─> /api/* (同源相對路徑)
+    └─> /chat_uploads/* (同源相對路徑)
+         ├─> Vite proxy (本機)
+         └─> Nginx proxy (Docker)
 ```
 
 ## 注意事項

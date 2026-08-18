@@ -2,7 +2,7 @@ import axios from 'axios'
 
 // Create an Axios instance with default config
 const apiClient = axios.create({
-  baseURL: (window.__API_BASE__ ? window.__API_BASE__.replace(/\/$/, '') + '/api' : import.meta.env.VITE_API_BASE_URL) || 'http://localhost:8000/api', 
+  baseURL: '/api',
   headers: {
     'Content-Type': 'application/json',
     'Accept': 'application/json'

@@ -139,11 +139,8 @@ backend/
 
 ## 🖥️ 前端整合重點
 
-- **環境變數**（`frontend/.env` 或 `.env.development`）：
-  ```
-  VITE_API_BASE_URL=http://localhost:8000/api
-  VITE_UPLOAD_BASE_URL=http://localhost:8000/chat_uploads
-  ```
+- **API 路由**：前端一律使用同源的 `/api/*` 與 `/chat_uploads/*`；本機由
+  `vite.config.js` 代理到 `http://localhost:8000`，Docker 由 Nginx 代理。
 - **登入/註冊**：`src/stores/auth.js` 直接呼叫後端 API；登入成功會把 `user` 與 `token` 存到 localStorage。
 - **對話/訊息流程**：`src/stores/chat.js`
   1. `initialize()` 先載入 `GET /api/conversations`，若沒有會自動建立一筆。
@@ -151,7 +148,7 @@ backend/
   3. `sendMessage()` 以 `FormData` 將 `conversation_id`, `content`, `files` 傳給 `/api/messages`。若後端回傳的助手訊息 `status = pending`，Pinia 會顯示停止按鈕並透過 `schedulePendingRefresh()` 自動輪詢。
   4. **標題同步**：`GET /api/messages` 會回傳 `conversation_title`。若前端發現標題已從 "New Chat" 變更，會同步更新 `conversations` store 並存入緩存。
   5. `stopGenerating()` 會呼叫 `POST /api/messages/{id}/stop` 更新狀態。
-  4. 附件 URL 透過 `buildUploadUrl` 指向 `VITE_UPLOAD_BASE_URL`。
+  6. 附件 URL 透過 `buildUploadUrl` 統一產生 `/chat_uploads/*` 相對路徑。
 
 前端開發指令：
 ```bash
@@ -178,7 +175,7 @@ npm run dev
 - **`SECRET_KEY` 暴露**
   - 別把密鑰寫進程式碼；使用 `.env` 或部署環境提供的 Secrets。
 - **附件抓不到**
-  - 確認 `VITE_UPLOAD_BASE_URL` 與後端 `app.mount('/chat_uploads', ...)` 對應，且檔案存在於 `chat_uploads/user_<id>/`。
+  - 確認 Vite／Nginx 已代理 `/chat_uploads`，且檔案存在於 `chat_uploads/user_<id>/`。
 - **測試失敗 (HTTP 405 on OPTIONS)**
   - 需要 CORS 設定；`backend/main.py` 已預設 `http://localhost:5173`，如改用其他域名請同步調整。
 

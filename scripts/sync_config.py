@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-配置同步腳本 - 從 config.toml 自動生成 .env 和更新 cloudflared config
+配置同步腳本 - 從 config.toml 更新 cloudflared config
 使用方式: python scripts/sync_config.py
 """
 
@@ -18,7 +18,6 @@ from pathlib import Path
 # 專案根目錄
 PROJECT_ROOT = Path(__file__).parent.parent
 CONFIG_FILE = PROJECT_ROOT / "config.toml"
-ENV_FILE = PROJECT_ROOT / ".env"
 CLOUDFLARED_CONFIG = Path.home() / ".cloudflared" / "config.yml"
 
 
@@ -33,46 +32,6 @@ def load_config():
         import toml
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return toml.load(f)
-
-
-def generate_env_file(config):
-    """從 config.toml 生成 .env 文件"""
-    server = config.get("server", {})
-    local = server.get("local", {})
-    
-    backend_url = local.get("backend_url", "http://localhost:8000")
-    
-    # 讀取現有的 .env 來保留 API keys 等機密資訊
-    existing_env = {}
-    if ENV_FILE.exists():
-        with open(ENV_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    existing_env[key.strip()] = value.strip()
-    
-    # 更新 URL 相關設定
-    existing_env["VITE_API_BASE_URL"] = f"{backend_url}/api"
-    existing_env["VITE_UPLOAD_BASE_URL"] = f"{backend_url}/chat_uploads"
-    
-    # 寫入 .env
-    with open(ENV_FILE, "w", encoding="utf-8") as f:
-        f.write("# 自動從 config.toml 生成 - 請勿手動編輯 URL 設定\n")
-        f.write("# 如需修改 URL，請編輯 config.toml 並執行: python scripts/sync_config.py\n\n")
-        
-        # URL 設定
-        f.write("# === URL 設定（自動生成）===\n")
-        f.write(f"VITE_API_BASE_URL={existing_env['VITE_API_BASE_URL']}\n")
-        f.write(f"VITE_UPLOAD_BASE_URL={existing_env['VITE_UPLOAD_BASE_URL']}\n\n")
-        
-        # 其他設定（保留原有值）
-        f.write("# === API Keys 和其他設定 ===\n")
-        for key, value in existing_env.items():
-            if key not in ["VITE_API_BASE_URL", "VITE_UPLOAD_BASE_URL"]:
-                f.write(f"{key}={value}\n")
-    
-    print(f"[OK] 已更新 .env")
 
 
 def update_cloudflared_config(config):
@@ -152,8 +111,7 @@ def main():
     print(f"    後端: {production.get('backend_url', 'N/A')}")
     print()
     
-    # 生成檔案
-    generate_env_file(config)
+    # 生成 cloudflared 設定
     update_cloudflared_config(config)
     
     print()
@@ -162,7 +120,7 @@ def main():
     print("下一步操作:")
     print("  1. 重新啟動後端服務 (如果正在運行)")
     print("  2. 重新啟動 cloudflared (如果正在運行): cloudflared tunnel run")
-    print("  3. 如果修改了前端 URL，重新啟動前端: npm run dev")
+    print("  3. 如果修改了本地服務埠，重新啟動對應服務")
 
 
 if __name__ == "__main__":

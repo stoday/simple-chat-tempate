@@ -57,9 +57,7 @@ export const useAppConfigStore = defineStore('appConfig', () => {
 
   const loadConfig = async () => {
     try {
-      const base = (window.__API_BASE__ || import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
-      const apiBase = base.endsWith('/api') ? base : `${base}/api`
-      const response = await fetch(`${apiBase}/config`)
+      const response = await fetch('/api/config')
       if (!response.ok) {
         return
       }

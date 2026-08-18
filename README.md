@@ -76,6 +76,9 @@ sudo docker compose exec backend \
 Compose 會在容器內使用 `/app/data/simplechat.db`。請勿使用
 `docker compose down -v`，因為 `-v` 會一併刪除 SQLite volume。
 
+Docker 前端會透過 Nginx 將同源的 `/api/*` 與 `/chat_uploads/*` 請求代理到
+`backend:8000`，不需要設定任何 `VITE_*` API URL 或前端 build argument。
+
 > 💡 **提示**：產生 SECRET_KEY 的方法：
 > - Windows (PowerShell): `openssl rand -hex 32`
 > - Linux / macOS: `openssl rand -hex 32`
@@ -89,11 +92,8 @@ Compose 會在容器內使用 `/app/data/simplechat.db`。請勿使用
 npm install
 ```
 
-在專案根目錄建立 `.env` 檔案（或 `.env.development`）：
-```env
-VITE_API_BASE_URL=http://localhost:8000/api
-VITE_UPLOAD_BASE_URL=http://localhost:8000/chat_uploads
-```
+前端不需要 API URL 環境變數。所有 API 與上傳檔案都使用同源相對路徑；
+開發時由 Vite proxy 轉送到 `http://localhost:8000`，Docker 部署時則由 Nginx 轉送。
 
 ---
 
@@ -155,6 +155,27 @@ npm run dev
 
 **啟動成功後：**
 - 前端介面：`http://localhost:5173/`
+- 前端 API 請求：`/api/*`（由 Vite proxy 轉送至 `http://localhost:8000`）
+- 上傳檔案請求：`/chat_uploads/*`（由 Vite proxy 轉送至 `http://localhost:8000`）
+
+### API 路由與設定原則
+
+前端不讀取 `VITE_API_BASE_URL`、`VITE_UPLOAD_BASE_URL` 或
+`window.__API_BASE__`。瀏覽器一律使用以下同源相對路徑：
+
+```text
+/api/*
+/chat_uploads/*
+```
+
+- 本機開發：`vite.config.js` 將相對路徑代理到 FastAPI `localhost:8000`。
+- Docker：`nginx.conf` 將相對路徑代理到 Compose 服務 `backend:8000`。
+- `config.toml`：由後端直接讀取，管理品牌、角色、主題及服務／Tunnel 設定。
+- `.env`：只保存後端執行環境與機密資料，例如 `SECRET_KEY` 和 Provider API key。
+
+這項設計避免 API 位址同時存在於 `config.toml`、`.env`、前端程式與 Docker
+build arguments。若以其他靜態網站伺服器部署前端，該伺服器也必須提供相同的
+`/api` 與 `/chat_uploads` reverse proxy。
 
 ---
 

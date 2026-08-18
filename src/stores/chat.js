@@ -2,12 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import apiClient from '../services/api'
 
-const getUploadBase = () => {
-  // 移除可能存在的 /api 後綴，因為 chat_uploads 是掛載在根路徑，不在 /api 下
-  let base = window.__API_BASE__ || ''
-  base = base.replace(/\/api\/?$/, '') // 移除結尾的 /api 或 /api/
-  return (base ? base.replace(/\/$/, '') + '/chat_uploads' : import.meta.env.VITE_UPLOAD_BASE_URL) || 'http://localhost:8000/chat_uploads'
-}
+const getUploadBase = () => '/chat_uploads'
 
 const buildUploadUrl = (relativePath) => {
   if (!relativePath) return null

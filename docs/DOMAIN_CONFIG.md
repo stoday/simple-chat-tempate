@@ -2,109 +2,46 @@
 
 ## 快速修改部署域名
 
-所有域名配置都集中在 `config.toml` 的 `[deployment]` 區塊中：
+前端不再偵測或組合 API 網域。瀏覽器永遠請求同一來源的 `/api/*` 與
+`/chat_uploads/*`，因此公開前端的 Web server 或 Tunnel 必須把這兩個路徑
+轉送至 FastAPI。
 
-```toml
-[deployment]
-# 部署域名設定 (用於 CORS 與前端自動偵測)
-# 修改這些設定後需要重啟後端服務
-frontend_domains = [
-    "https://your-new-domain.com",  # 修改這裡！
-    "http://localhost:5173"
-]
-# API 域名 (前端會根據 frontend_domain 自動對應)
-api_domain_mapping = { "your-prefix" = "api" }
-# 預設 API 域名
-default_api_domain = "api.your-domain.com"  # 修改這裡！
-```
+Docker 已由 `nginx.conf` 提供代理，不需要額外前端設定。其他部署方式可採用：
 
-## 修改步驟
+```nginx
+location /api/ {
+    proxy_pass http://backend:8000/api/;
+}
 
-### 1. 更新 config.toml
-
-編輯 `config.toml` 中的 `[deployment]` 區塊：
-
-```toml
-frontend_domains = [
-    "https://heranchat.demo-today.org",  # 您的新前端域名
-    "http://localhost:5173"               # 保留本地開發
-]
-default_api_domain = "api.demo-today.org"  # 您的 API 域名
-```
-
-### 2. 更新前端自動偵測 (index.html)
-
-編輯 `index.html` 中的域名偵測邏輯（第 18-20 行）：
-
-```javascript
-if (hostname.startsWith('hearnchat.')) {  // 改成您的前綴
-    window.__API_BASE__ = protocol + '//api.demo-today.org';
+location /chat_uploads/ {
+    proxy_pass http://backend:8000/chat_uploads/;
 }
 ```
 
-### 3. 重啟服務
+`config.toml` 的 `[server.production]` 保留公開域名與 Cloudflare Tunnel 設定；
+修改後執行：
 
-```bash
-# 重啟後端 (會讀取新的 config.toml)
-# 如果使用 uvicorn:
-uvicorn backend.main:app --reload
-
-# 前端會自動熱更新，或硬刷新瀏覽器 (Ctrl+Shift+R)
+```powershell
+python scripts/sync_config.py
 ```
 
-## 範例配置
-
-### 範例 1: 從 app.demo-today.org 改為 hearnchat.demo-today.org
-
-**config.toml:**
-```toml
-frontend_domains = [
-    "https://heranchat.demo-today.org",
-    "http://localhost:5173"
-]
-```
-
-**index.html (第 18-20 行):**
-```javascript
-if (hostname.startsWith('app.') || hostname.startsWith('hearnchat.')) {
-    window.__API_BASE__ = protocol + '//api.demo-today.org';
-}
-```
-
-### 範例 2: 完全更換為新域名 (example.com)
-
-**config.toml:**
-```toml
-frontend_domains = [
-    "https://chat.example.com",
-    "http://localhost:5173"
-]
-default_api_domain = "api.example.com"
-```
-
-**index.html:**
-```javascript
-if (hostname.includes('example.com')) {
-    if (hostname.startsWith('chat.')) {
-        window.__API_BASE__ = protocol + '//api.example.com';
-    }
-}
-```
+這支腳本只更新 `~/.cloudflared/config.yml`，不會修改 `.env`。更新設定後請
+重新啟動後端、反向代理與 Cloudflare Tunnel。
 
 ## 注意事項
 
-1. **後端**：修改 `config.toml` 後**必須重啟**後端服務
-2. **前端**：修改 `index.html` 後需要重新 build 或硬刷新瀏覽器
-3. **HTTPS**：生產環境建議使用 HTTPS，確保 Cloudflare 或反向代理已正確配置 SSL
-4. **內網部署**：如果是內網 IP 訪問，系統會自動偵測並使用 `http://IP:8000` 作為 API 地址
+1. **同源代理**：公開前端的服務必須代理 `/api` 與 `/chat_uploads`。
+2. **後端**：修改 `config.toml` 後必須重新啟動，才能重新載入 CORS 等設定。
+3. **HTTPS**：生產環境建議使用 HTTPS，並由 Cloudflare 或反向代理處理 TLS。
+4. **靜態託管**：若平台無法提供 reverse proxy，必須另外設置 gateway；前端不再支援以環境變數指定跨網域 API。
 
 ## 檔案位置總覽
 
 | 檔案 | 用途 | 需要重啟 |
 |------|------|---------|
-| `config.toml` | 後端 CORS 域名清單 | ✅ 是 (後端) |
-| `index.html` | 前端域名自動偵測邏輯 | ⚠️ 需刷新瀏覽器 |
-| `docs/MIGRATION_GUIDE.md` | 文件參考 | ❌ 否 |
+| `config.toml` | 後端、公開域名與 Tunnel 設定 | ✅ 後端／Tunnel |
+| `vite.config.js` | 本機 `/api`、`/chat_uploads` 代理 | ✅ 前端 |
+| `nginx.conf` | Docker 同源反向代理 | ✅ Nginx 容器 |
 
 ---
 
