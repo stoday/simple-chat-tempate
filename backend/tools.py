@@ -631,7 +631,7 @@ def build_agent(stream: bool = False):
                ],
         model=cfg["model_name"],
         temperature=cfg["temperature"],
-        system_prompt=cfg.get("system_prompt"),
+        system_prompt=cfg.get("system_prompt") or "",
         language='zh',
         verbose=True,
         keep_logs=True,

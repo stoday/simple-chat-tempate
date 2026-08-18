@@ -1,6 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import apiClient from '../services/api'
+import {
+  AgentStreamGapError,
+  applyAgentEvent,
+  hydrateAgentEventState,
+  streamAgentEvents
+} from '../services/agentStream'
 
 const getUploadBase = () => '/chat_uploads'
 
@@ -17,7 +23,7 @@ const formatFileFromApi = (file) => ({
   url: buildUploadUrl(file.file_path)
 })
 
-const formatMessageFromApi = (message) => ({
+const formatMessageFromApi = (message) => hydrateAgentEventState({
   id: String(message.id),
   conversationId: message.conversation_id ? String(message.conversation_id) : null,
   role: message.sender_type === 'assistant' ? 'assistant' : 'user',
@@ -27,7 +33,7 @@ const formatMessageFromApi = (message) => ({
   stoppedAt: message.stopped_at || null,
   timestamp: message.created_at,
   files: Array.isArray(message.files) ? message.files.map(formatFileFromApi) : []
-})
+}, Array.isArray(message.events) ? message.events : [])
 
 const formatConversationFromApi = (conversation) => ({
   id: String(conversation.id),
@@ -82,6 +88,7 @@ const buildOfflinePlaceholder = () => ({
 
 export const useChatStore = defineStore('chat', () => {
   let activeUploadController = null
+  const activeStreamControllers = new Map()
   const conversations = ref([])
   const activeChatId = ref(null)
   const messagesMap = ref({})
@@ -176,6 +183,15 @@ export const useChatStore = defineStore('chat', () => {
     setActiveConversation(conversationId)
   }
 
+  const updateConversationTitle = (conversationId, title) => {
+    if (!title) return
+    const normalizedId = String(conversationId)
+    const idx = conversations.value.findIndex((conv) => String(conv.id) === normalizedId)
+    if (idx === -1 || conversations.value[idx].title === title) return
+    conversations.value[idx] = { ...conversations.value[idx], title }
+    saveCachedConversations(conversations.value)
+  }
+
   const loadConversations = async () => {
     isLoadingConversations.value = true
     error.value = null
@@ -261,9 +277,11 @@ export const useChatStore = defineStore('chat', () => {
         }
       }
 
-      const hasPending = formatted.some((msg) => msg.role === 'assistant' && msg.status === 'pending')
-      if (hasPending) {
-        schedulePendingRefresh(conversationId)
+      const pendingMessages = formatted.filter((msg) => msg.role === 'assistant' && msg.status === 'pending')
+      if (pendingMessages.length) {
+        pendingMessages.forEach((message) => {
+          void connectToStream(message.id, conversationId)
+        })
       } else {
         clearPendingRefresh(conversationId)
       }
@@ -317,6 +335,10 @@ export const useChatStore = defineStore('chat', () => {
     error.value = null
     try {
       await apiClient.delete(`/conversations/${conversationId}`)
+      for (const message of messagesMap.value[conversationId] || []) {
+        activeStreamControllers.get(message.id)?.abort()
+        activeStreamControllers.delete(message.id)
+      }
       conversations.value = conversations.value.filter((conv) => conv.id !== conversationId)
       saveCachedConversations(conversations.value)
       removeMessagesForConversation(conversationId)
@@ -417,7 +439,7 @@ export const useChatStore = defineStore('chat', () => {
 
       // 如果有回覆且狀態是 pending，開啟串流連線
       if (data?.reply?.status === 'pending') {
-        connectToStream(data.reply.id, conversationId)
+        void connectToStream(data.reply.id, conversationId)
       } else if (data?.reply?.status === 'completed') {
         // 如果已經完成（極端快速的情況），也要更新一下
         schedulePendingRefresh(conversationId)
@@ -459,69 +481,94 @@ export const useChatStore = defineStore('chat', () => {
     const conversationId = activeChatId.value
     const pending = pendingAssistantMessage.value
     if (!conversationId || !pending) return
-    const existing = ensureMessageBucket(conversationId)
-    const cancellationText = pending.content || 'Response cancelled by user.'
-    const updatedMessages = existing.map((msg) => {
-      if (msg.id !== pending.id) return msg
-      return {
-        ...msg,
-        status: 'cancelled',
-        content: cancellationText,
-        stoppedAt: new Date().toISOString()
-      }
-    })
-    setMessagesForConversation(conversationId, updatedMessages)
+    const streamController = activeStreamControllers.get(pending.id)
     clearPendingRefresh(conversationId)
     try {
-      await apiClient.post(`/messages/${pending.id}/stop`)
-      await loadMessages(conversationId, { includeAssistant: true })
+      const { data } = await apiClient.post(`/messages/${pending.id}/stop`)
+      streamController?.abort()
+      const bucket = ensureMessageBucket(conversationId)
+      const index = bucket.findIndex((message) => message.id === pending.id)
+      if (index >= 0) {
+        const serverMessage = formatMessageFromApi(data)
+        bucket[index] = {
+          ...bucket[index],
+          ...serverMessage,
+          executionEvents: bucket[index].executionEvents || [],
+          lastSequence: bucket[index].lastSequence || 0,
+          streamTerminal: true
+        }
+      }
     } catch (err) {
       error.value = err?.response?.data?.detail || err.message || 'Failed to stop response'
-      await loadMessages(conversationId, { includeAssistant: true })
       throw err
     }
   }
 
-  const connectToStream = (messageId, conversationId) => {
-    const token = localStorage.getItem('auth_token')
-    const baseUrl = apiClient.defaults.baseURL
-    const streamUrl = `${baseUrl}/messages/${messageId}/stream?token=${token}`
-    
-    const eventSource = new EventSource(streamUrl)
-    let currentText = ''
+  const connectToStream = async (messageId, conversationId, { reset = false } = {}) => {
+    const streamKey = String(messageId)
+    activeStreamControllers.get(streamKey)?.abort()
+    const controller = new AbortController()
+    activeStreamControllers.set(streamKey, controller)
 
-    eventSource.onmessage = (event) => {
-      if (event.data === '[DONE]') {
-        eventSource.close()
-        // 串流結束，更新訊息狀態為 completed
-        refreshMessageStatus(messageId, conversationId)
-        return
-      }
-
-      try {
-        console.log('[Stream Raw]:', event.data);
-        const data = JSON.parse(event.data)
-        if (data.token) {
-          console.log('[Stream Token]:', data.token);
-          currentText += data.token
-          console.log('[Stream CurrentText]:', currentText);
-          updateMessageContent(messageId, conversationId, currentText)
-        }
-        if (data.error) {
-          console.error('Stream error:', data.error)
-          eventSource.close()
-          schedulePendingRefresh(conversationId)
-        }
-      } catch (err) {
-        // Ignore parse errors
-      }
+    const bucket = messagesMap.value[conversationId]
+    const initialIndex = bucket?.findIndex((message) => message.id === streamKey) ?? -1
+    if (reset && initialIndex >= 0) {
+      Object.assign(bucket[initialIndex], {
+        content: '',
+        lastSequence: 0,
+        executionEvents: [],
+        thinkingStatus: '',
+        streamTerminal: false,
+        streamError: null
+      })
     }
 
-    eventSource.onerror = (err) => {
-      console.error('EventSource failed:', err)
-      eventSource.close()
-      // 如果串流失敗，退回原本的輪詢機制
+    let retryCount = 0
+    try {
+      while (!controller.signal.aborted) {
+        const currentBucket = messagesMap.value[conversationId]
+        const current = currentBucket?.find((message) => message.id === streamKey)
+        if (!current || current.streamTerminal) return
+        const token = localStorage.getItem('auth_token')
+        if (!token) throw new Error('Missing authentication token')
+        const baseUrl = (apiClient.defaults.baseURL || '/api').replace(/\/$/, '')
+        try {
+          for await (const event of streamAgentEvents({
+            url: `${baseUrl}/messages/${messageId}/stream`,
+            token,
+            afterSequence: current.lastSequence || 0,
+            signal: controller.signal
+          })) {
+            const liveBucket = messagesMap.value[conversationId]
+            const index = liveBucket?.findIndex((message) => message.id === streamKey) ?? -1
+            if (index < 0) return
+            liveBucket[index] = applyAgentEvent(liveBucket[index], event)
+            if (event.type === 'done' && event.payload?.conversation_title) {
+              updateConversationTitle(conversationId, event.payload.conversation_title)
+            }
+            if (liveBucket[index].streamTerminal) return
+          }
+          const latest = messagesMap.value[conversationId]?.find(
+            (message) => message.id === streamKey
+          )
+          if (latest?.streamTerminal) return
+          throw new Error('Agent stream closed before a terminal event')
+        } catch (streamError) {
+          if (controller.signal.aborted || streamError?.name === 'AbortError') return
+          retryCount += 1
+          if (retryCount > 3) throw streamError
+          if (!(streamError instanceof AgentStreamGapError)) {
+            await new Promise((resolve) => setTimeout(resolve, 250 * (2 ** (retryCount - 1))))
+          }
+        }
+      }
+    } catch (streamError) {
+      error.value = streamError?.message || 'Agent stream failed'
       schedulePendingRefresh(conversationId)
+    } finally {
+      if (activeStreamControllers.get(streamKey) === controller) {
+        activeStreamControllers.delete(streamKey)
+      }
     }
   }
 

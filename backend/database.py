@@ -58,6 +58,19 @@ CREATE TABLE IF NOT EXISTS message_file (
 );
 """
 
+MESSAGE_EVENT_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS message_event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    sequence INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(message_id, sequence),
+    FOREIGN KEY(message_id) REFERENCES message(id) ON DELETE CASCADE
+);
+"""
+
 RAG_FILE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS rag_file (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,6 +120,7 @@ def init_db() -> None:
         conn.execute(CONVERSATION_TABLE_SQL)
         conn.execute(MESSAGE_TABLE_SQL)
         conn.execute(MESSAGE_FILE_TABLE_SQL)
+        conn.execute(MESSAGE_EVENT_TABLE_SQL)
         conn.execute(RAG_FILE_TABLE_SQL)
         conn.execute(MSSQL_CONFIG_TABLE_SQL)
         conn.execute(LLM_CONFIG_TABLE_SQL)

@@ -20,7 +20,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 from pydantic import BaseModel, EmailStr, Field, validator
 
 from .database import get_connection, get_db, init_db, load_llm_config
@@ -30,6 +30,13 @@ from .rag_state import (
     set_index_status,
     set_indexed_files,
     set_rag_instance,
+)
+from .streaming_events import (
+    TERMINAL_EVENT_TYPES,
+    append_event,
+    encode_sse,
+    list_events,
+    translate_agent_event,
 )
 
 import akasha
@@ -43,7 +50,6 @@ if not SECRET_KEY:
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer(auto_error=False)
 
 # 從 config.toml 讀取配置
@@ -130,6 +136,7 @@ app.add_middleware(
 async def startup_event():
     """初始化線程池"""
     global _thread_pool
+    init_db()
     print(f"[POOL] Initializing thread pool with {_THREAD_POOL_SIZE} workers...")
     _thread_pool = ThreadPoolExecutor(max_workers=_THREAD_POOL_SIZE)
     # 同時預載入 Agent (雖然在模組等級已執行，但這裡可再次確保)
@@ -339,6 +346,7 @@ class MessageResponse(BaseModel):
     stopped_at: Optional[str] = None
     created_at: str
     files: List[MessageFileResponse] = Field(default_factory=list)
+    events: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class MessageCreateResponse(BaseModel):
@@ -362,7 +370,12 @@ SIMULATED_REPLY_DELAY = float(os.environ.get("SIMULATED_REPLY_DELAY", "1.5"))
 DOWNLOAD_LINKS_PLACEHOLDER = "__DOWNLOAD_LINKS__"
 pending_generations: Dict[int, Dict[str, object]] = {}
 # 用於管理 SSE 串流的 Queue 字典
-active_streams: Dict[int, asyncio.Queue] = {}
+active_streams: Dict[int, set[asyncio.Queue]] = {}
+
+
+def notify_stream_subscribers(message_id: int, event: dict) -> None:
+    for subscriber in list(active_streams.get(message_id, set())):
+        subscriber.put_nowait(event)
 
 # 全局線程池：重用線程以確保 Agent Cache 共享 (2026-01-13 改用 ThreadPool)
 import queue
@@ -729,13 +742,19 @@ def row_to_user(row: sqlite3.Row) -> UserResponse:
 
 
 def verify_password(plain_password: str, password_hash: str) -> bool:
-    return pwd_context.verify(plain_password, password_hash)
+    try:
+        return bcrypt.checkpw(
+            plain_password.encode("utf-8"), password_hash.encode("ascii")
+        )
+    except (ValueError, UnicodeEncodeError):
+        return False
 
 
 def hash_password(password: str) -> str:
-    if len(password.encode("utf-8")) > 72:
+    encoded_password = password.encode("utf-8")
+    if len(encoded_password) > 72:
         raise ValueError("password cannot be longer than 72 bytes")
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(encoded_password, bcrypt.gensalt()).decode("ascii")
 
 
 def require_admin(user: UserResponse) -> None:
@@ -778,7 +797,11 @@ def get_message_files(db: sqlite3.Connection, message_id: int) -> List[MessageFi
     ]
 
 
-def row_to_message(row: sqlite3.Row, files: Optional[List[MessageFileResponse]] = None) -> MessageResponse:
+def row_to_message(
+    row: sqlite3.Row,
+    files: Optional[List[MessageFileResponse]] = None,
+    events: Optional[List[Dict[str, Any]]] = None,
+) -> MessageResponse:
     return MessageResponse(
         id=row["id"],
         user_id=row["user_id"],
@@ -790,6 +813,7 @@ def row_to_message(row: sqlite3.Row, files: Optional[List[MessageFileResponse]] 
         stopped_at=row["stopped_at"],
         created_at=row["created_at"],
         files=files or [],
+        events=events or [],
     )
 
 
@@ -1129,20 +1153,23 @@ def build_reply(
     print(prompt)
     # 這裡支援串流輸出
     agent = get_agent(stream=True)
-    result = agent(question=prompt)
+    result = agent(question=prompt, include_thinking=True)
     print("end akasha")
 
     # 如果 result 是產生器，我們需要一個個丟出去
     full_text = ""
+    seen_tool_calls: set[str] = set()
     if not isinstance(result, str) and hasattr(result, "__iter__"):
         for chunk in result:
             # 將每個小塊丟回 Queue，標記為 "token"
-            result_queue.put(("token", chunk))
-            full_text += chunk
+            for event_type, payload in translate_agent_event(chunk, seen_tool_calls):
+                result_queue.put(("event", (event_type, payload)))
+                if event_type == "answer_delta":
+                    full_text += payload["delta"]
         response_text = full_text
     else:
         response_text = str(result)
-        result_queue.put(("token", response_text))
+        result_queue.put(("event", ("answer_delta", {"delta": response_text})))
 
     # 後續處理 (JSON 解析等)
     try:
@@ -1318,14 +1345,25 @@ async def run_assistant_reply(
 
         reply_payload = None
         # 初始化 SSE 串流 Queue
-        active_streams[message_id] = asyncio.Queue()
         
         while True:
             # 嘗試讀取 Queue
             try:
                 status_label, payload = result_queue.get_nowait()
-                if status_label == "token":
-                    await active_streams[message_id].put(payload)
+                if status_label == "event":
+                    event_type, event_payload = payload
+                    event_conn = get_connection()
+                    try:
+                        event = append_event(event_conn, message_id, event_type, event_payload)
+                        if event_type == "answer_delta":
+                            event_conn.execute(
+                                "UPDATE message SET content = content || ? WHERE id = ? AND status = 'pending'",
+                                (event_payload["delta"], message_id),
+                            )
+                        event_conn.commit()
+                    finally:
+                        event_conn.close()
+                    notify_stream_subscribers(message_id, event)
                 elif status_label == "ok":
                     reply_payload = payload
                     # 即使收到 ok，也要確認是否還有其他訊息在 queue 中，但在這裡通常 ok 是最後一個
@@ -1343,9 +1381,6 @@ async def run_assistant_reply(
                 await asyncio.sleep(0.05)
         
         # 結束串流
-        if message_id in active_streams:
-            await active_streams[message_id].put(None)
-
         if reply_payload is None:
             raise RuntimeError("Assistant worker returned no payload")
 
@@ -1375,12 +1410,28 @@ async def run_assistant_reply(
             
             for attempt in range(3):
                 try:
-                    conn.execute(
-                        "UPDATE message SET content = ?, status = 'completed', stopped_at = NULL WHERE id = ?",
+                    transition = conn.execute(
+                        """
+                        UPDATE message
+                        SET content = ?, status = 'completed', stopped_at = NULL
+                        WHERE id = ? AND status = 'pending'
+                        """,
                         (final_text, message_id),
                     )
+                    if transition.rowcount != 1:
+                        conn.rollback()
+                        return
+                    title_row = conn.execute(
+                        "SELECT title FROM conversation WHERE id = ?",
+                        (conversation_id,),
+                    ).fetchone()
+                    done_payload = {
+                        "conversation_title": title_row["title"]
+                    } if title_row and title_row["title"] else {}
+                    done_event = append_event(conn, message_id, "done", done_payload)
                     conn.execute("UPDATE conversation SET updated_at = datetime('now') WHERE id = ?", (conversation_id,))
                     conn.commit()
+                    notify_stream_subscribers(message_id, done_event)
                     break
                 except sqlite3.OperationalError as exc:
                     if "locked" not in str(exc).lower() or attempt == 2:
@@ -1400,26 +1451,37 @@ async def run_assistant_reply(
                     (message_id,),
                 ).fetchone()
                 if status_row and status_row["status"] == "pending":
-                    fallback_text = status_row["content"] or "Response failed."
-                    conn.execute(
-                        "UPDATE message SET content = ?, status = 'failed', stopped_at = datetime('now') WHERE id = ?",
+                    fallback_text = status_row["content"] or ""
+                    transition = conn.execute(
+                        """
+                        UPDATE message
+                        SET content = ?, status = 'error', stopped_at = datetime('now')
+                        WHERE id = ? AND status = 'pending'
+                        """,
                         (fallback_text, message_id),
                     )
+                    if transition.rowcount != 1:
+                        conn.rollback()
+                        return
+                    error_event = append_event(
+                        conn,
+                        message_id,
+                        "error",
+                        {
+                            "code": "assistant_generation_failed",
+                            "message": "Response generation failed.",
+                            "retryable": True,
+                            "stage": "generation",
+                        },
+                    )
                     conn.commit()
+                    notify_stream_subscribers(message_id, error_event)
             finally:
                 conn.close()
         except Exception as update_exc:
             print(f"Failed to persist assistant failure state: {update_exc}")
     finally:
-        if process is not None and process.is_alive():
-            process.terminate()
-            process.join(timeout=1.0)
         pending_generations.pop(message_id, None)
-        # 延遲一下移除串流 Queue，讓 SSE 端有時間讀到 None
-        async def delayed_pop():
-            await asyncio.sleep(10)
-            active_streams.pop(message_id, None)
-        asyncio.create_task(delayed_pop())
 
 
 def cancel_pending_generation(message_id: int) -> None:
@@ -1438,14 +1500,6 @@ def cancel_pending_generation(message_id: int) -> None:
     if isinstance(task, asyncio.Task):
         task.cancel()
         
-    # Signal stream to stop
-    if message_id in active_streams:
-        try:
-            active_streams[message_id].put_nowait(None)
-        except Exception:
-            pass
-
-
 async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
@@ -1454,8 +1508,6 @@ async def get_current_user(
     token = None
     if credentials:
         token = credentials.credentials
-    else:
-        token = request.query_params.get("token")
     
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing credentials")
@@ -1472,11 +1524,6 @@ async def get_current_user(
     if row is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return row_to_user(row)
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    init_db()
 
 
 @app.post("/api/auth/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -1965,6 +2012,7 @@ def list_conversations(
 @app.get("/api/messages/{message_id}/stream")
 async def stream_message(
     message_id: int,
+    after_sequence: int = 0,
     current_user: UserResponse = Depends(get_current_user),
     db: sqlite3.Connection = Depends(get_db),
 ):
@@ -1977,43 +2025,35 @@ async def stream_message(
         raise HTTPException(status_code=403, detail="Access denied")
 
     async def event_generator():
-        # 等待串流開始
-        found = False
-        for _ in range(30): # 等待最多 3 秒
-            if message_id in active_streams:
-                found = True
-                break
-            await asyncio.sleep(0.1)
-        
-        if not found:
-            # 如果找不到串流，檢查是否已經完成
-            cursor = db.execute("SELECT status, content FROM message WHERE id = ?", (message_id,))
-            row = cursor.fetchone()
-            if row and row["status"] == "completed":
-                yield f"data: {json.dumps({'token': row['content'], 'done': True})}\n\n"
-                yield "data: [DONE]\n\n"
-                return
-            yield f"data: {json.dumps({'error': 'Stream not found'})}\n\n"
-            yield "data: [DONE]\n\n"
-            return
+        subscriber: asyncio.Queue = asyncio.Queue()
+        active_streams.setdefault(message_id, set()).add(subscriber)
+        last_sequence = max(0, after_sequence)
+        try:
+            while True:
+                event_conn = get_connection()
+                try:
+                    replay = list_events(event_conn, message_id, last_sequence)
+                finally:
+                    event_conn.close()
+                for event in replay:
+                    last_sequence = event["sequence"]
+                    yield encode_sse(event)
+                    if event["type"] in TERMINAL_EVENT_TYPES:
+                        return
 
-        queue = active_streams[message_id]
-        while True:
-            try:
-                # 這裡使用 wait_for 避免永久卡死
-                token = await asyncio.wait_for(queue.get(), timeout=60.0)
-                if token is None: # 結束標記
-                    yield "data: [DONE]\n\n"
-                    break
-                yield f"data: {json.dumps({'token': token})}\n\n"
-            except asyncio.TimeoutError:
-                yield f"data: {json.dumps({'error': 'Stream timeout'})}\n\n"
-                yield "data: [DONE]\n\n"
-                break
-            except Exception as e:
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-                yield "data: [DONE]\n\n"
-                break
+                event = await asyncio.wait_for(subscriber.get(), timeout=60.0)
+                if event["sequence"] <= last_sequence:
+                    continue
+                last_sequence = event["sequence"]
+                yield encode_sse(event)
+                if event["type"] in TERMINAL_EVENT_TYPES:
+                    return
+        finally:
+            subscribers = active_streams.get(message_id)
+            if subscribers is not None:
+                subscribers.discard(subscriber)
+                if not subscribers:
+                    active_streams.pop(message_id, None)
 
     headers = {
         "Cache-Control": "no-cache",
@@ -2081,8 +2121,32 @@ def delete_conversation(
         """,
         (conversation_id,),
     ).fetchall()
+
+    message_rows = db.execute(
+        "SELECT id FROM message WHERE conversation_id = ?", (conversation_id,)
+    ).fetchall()
+    for message_row in message_rows:
+        message_id = message_row["id"]
+        cancel_pending_generation(message_id)
+        subscribers = active_streams.pop(message_id, set())
+        if subscribers:
+            sequence = db.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM message_event WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()[0]
+            deleted_event = {
+                "version": 1,
+                "type": "stopped",
+                "message_id": message_id,
+                "sequence": sequence,
+                "timestamp": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+                "payload": {"reason": "conversation_deleted"},
+            }
+            for subscriber in subscribers:
+                subscriber.put_nowait(deleted_event)
     
     # 2. 從資料庫刪除對話 (會透過 CASCADE 刪除 message 與 message_file 的 record)
+    db.execute("DELETE FROM message WHERE conversation_id = ?", (conversation_id,))
     db.execute("DELETE FROM conversation WHERE id = ?", (conversation_id,))
     db.commit()
     
@@ -2234,7 +2298,14 @@ def list_messages(
         params.append("user")
     sql += " ORDER BY created_at ASC"
     rows = db.execute(sql, tuple(params)).fetchall()
-    messages = [row_to_message(row, get_message_files(db, row["id"])) for row in rows]
+    messages = [
+        row_to_message(
+            row,
+            get_message_files(db, row["id"]),
+            list_events(db, row["id"]),
+        )
+        for row in rows
+    ]
     return MessageListResponse(messages=messages, conversation_title=base_conversation["title"])
 
 
@@ -2247,31 +2318,26 @@ async def stop_generation(
     message_row = get_message_row_or_404(message_id, db)
     if message_row["sender_type"] != "assistant":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only assistant messages can be stopped")
-    if message_row["status"] != "pending":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Message is not pending")
     conversation = get_conversation_or_404(message_row["conversation_id"], db)
     if current_user.role != "admin" and conversation["user_id"] != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    if message_row["status"] == "stopped":
+        return row_to_message(message_row, get_message_files(db, message_id))
+    if message_row["status"] != "pending":
+        return row_to_message(message_row, get_message_files(db, message_id))
+
     cancel_pending_generation(message_id)
-    cancellation_text = message_row["content"] or "Response cancelled by user."
-    db.execute(
-        "UPDATE message SET status = 'cancelled', content = ?, stopped_at = datetime('now') WHERE id = ?",
-        (cancellation_text, message_id),
+    transition = db.execute(
+        "UPDATE message SET status = 'stopped', stopped_at = datetime('now') WHERE id = ? AND status = 'pending'",
+        (message_id,),
     )
+    if transition.rowcount != 1:
+        db.rollback()
+        updated = get_message_row_or_404(message_id, db)
+        return row_to_message(updated, get_message_files(db, message_id))
+    stopped_event = append_event(db, message_id, "stopped", {"reason": "user_requested"})
     touch_conversation(db, conversation["id"])
     db.commit()
+    notify_stream_subscribers(message_id, stopped_event)
     updated = get_message_row_or_404(message_id, db)
     return row_to_message(updated, get_message_files(db, message_id))
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Pre-initialize agent on server startup to avoid delays on first request."""
-    import sys
-    print("=" * 50, flush=True)
-    print("Initializing agent...", flush=True)
-    sys.stdout.flush()
-    get_agent(stream=True)
-    print("Agent initialized successfully.", flush=True)
-    print("=" * 50, flush=True)
-    sys.stdout.flush()

@@ -68,7 +68,7 @@ backend/
 4. **依賴說明**
    - `fastapi`, `uvicorn[standard]`: 服務主架構。
    - `python-jose[cryptography]`: JWT。
-   - `passlib[bcrypt]` + `bcrypt==4.1.2`: 密碼雜湊。
+   - `bcrypt==5.0.0`: 密碼雜湊；後端直接使用 bcrypt API，避免 Passlib 1.7.4 與 bcrypt 5.x 的 backend 不相容。
    - `python-multipart`: 處理上傳。
    - `python-dotenv`: 載入 `.env`。
    - `httpx==0.26.0`, `pytest`: 後端測試。
@@ -170,8 +170,8 @@ npm run dev
 
 ## ❓ 常見問題
 
-- **bcrypt 錯誤 `AttributeError: module 'bcrypt' has no attribute '__about__'`**
-  - 請安裝 `bcrypt==4.1.2`（`pip install bcrypt==4.1.2`），並確認沒有其他舊版殘留。
+- **bcrypt 啟動/登入錯誤**
+  - 確認使用專案 requirements 安裝 `bcrypt==5.0.0`；不要再安裝 `passlib[bcrypt]` 或手動降版 bcrypt。
 - **`SECRET_KEY` 暴露**
   - 別把密鑰寫進程式碼；使用 `.env` 或部署環境提供的 Secrets。
 - **附件抓不到**

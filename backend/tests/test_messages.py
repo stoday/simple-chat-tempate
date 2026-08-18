@@ -9,25 +9,23 @@ from .utils import auth_header, bootstrap_admin_and_user
 
 
 def create_conversation(client: TestClient, token: str, title: str = "Test Chat") -> int:
-    resp = client.post(
-        "/api/conversations",
-        json={"title": title},
-        headers=auth_header(token),
+    response = client.post(
+        "/api/conversations", json={"title": title}, headers=auth_header(token)
     )
-    assert resp.status_code == 201, resp.text
-    return resp.json()["id"]
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
 
 
 def _fetch_rows(query: str, params: tuple = ()):
     db_path = Path(os.environ["SIMPLECHAT_DB_PATH"])
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row  # type: ignore[attr-defined]
-        return conn.execute(query, params).fetchall()
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        return connection.execute(query, params).fetchall()
 
 
 def wait_for_status(message_id: int, expected: str, timeout: float = 3.0) -> None:
-    start = time.time()
-    while time.time() - start < timeout:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         rows = _fetch_rows("SELECT status FROM message WHERE id = ?", (message_id,))
         if rows and rows[0]["status"] == expected:
             return
@@ -36,265 +34,220 @@ def wait_for_status(message_id: int, expected: str, timeout: float = 3.0) -> Non
 
 
 def test_text_message_and_reply_persist(client: TestClient):
-    _, user, _, user_token = bootstrap_admin_and_user(client)
-    conversation_id = create_conversation(client, user_token)
-    resp = client.post(
+    _, user, _, token = bootstrap_admin_and_user(client)
+    conversation_id = create_conversation(client, token)
+    response = client.post(
         "/api/messages",
         data={"content": "Hi there", "conversation_id": str(conversation_id)},
-        headers=auth_header(user_token),
+        headers=auth_header(token),
     )
-    assert resp.status_code == 200, resp.text
-    payload = resp.json()
-    wait_for_status(payload["reply"]["id"], "completed")
+    assert response.status_code == 200, response.text
+    wait_for_status(response.json()["reply"]["id"], "completed")
 
-    rows = _fetch_rows("SELECT sender_type, content FROM message WHERE user_id = ? ORDER BY id", (user["id"],))
-    assert len(rows) == 2  # user + assistant reply
+    rows = _fetch_rows(
+        "SELECT sender_type, content FROM message WHERE user_id = ? ORDER BY id",
+        (user["id"],),
+    )
+    assert len(rows) == 2
     assert rows[0]["sender_type"] == "user"
     assert rows[0]["content"] == "Hi there"
     assert rows[1]["sender_type"] == "assistant"
-    assert "收到的文字訊息: Hi there" in rows[1]["content"]
-    assert "未收到檔案訊息。" in rows[1]["content"]
-    assert "下載連結:" in rows[1]["content"]
-    assert "/chat_uploads/" in rows[1]["content"]
+    assert rows[1]["content"].startswith("Test response:")
+    assert "Hi there" in rows[1]["content"]
 
 
 def test_single_file_message_persists_metadata(client: TestClient):
-    _, user, _, user_token = bootstrap_admin_and_user(client)
-    conversation_id = create_conversation(client, user_token, "Files")
+    _, user, _, token = bootstrap_admin_and_user(client)
+    conversation_id = create_conversation(client, token, "Files")
     upload_root = Path(os.environ["CHAT_UPLOAD_ROOT"])
-    files = [("files", ("hello.txt", b"Hello World", "text/plain"))]
-    resp = client.post(
+    response = client.post(
         "/api/messages",
-        data={"content": "Hello admin!", "sender_type": "user", "conversation_id": str(conversation_id)},
-        files=files,
-        headers=auth_header(user_token),
+        data={"content": "Hello admin!", "conversation_id": str(conversation_id)},
+        files=[("files", ("hello.txt", b"Hello World", "text/plain"))],
+        headers=auth_header(token),
     )
-    assert resp.status_code == 200, resp.text
-    payload = resp.json()["message"]
+    assert response.status_code == 200, response.text
+    payload = response.json()["message"]
     assert payload["user_id"] == user["id"]
-
-    saved_path = upload_root / payload["files"][0]["file_path"]
-    assert saved_path.exists()
-
-    file_rows = _fetch_rows("SELECT file_name, mime_type FROM message_file WHERE message_id = ?", (payload["id"],))
-    assert len(file_rows) == 1
-    assert file_rows[0]["file_name"] == "hello.txt"
-    assert file_rows[0]["mime_type"] == "text/plain"
+    assert (upload_root / payload["files"][0]["file_path"]).exists()
+    rows = _fetch_rows(
+        "SELECT file_name, mime_type FROM message_file WHERE message_id = ?",
+        (payload["id"],),
+    )
+    assert [(row["file_name"], row["mime_type"]) for row in rows] == [
+        ("hello.txt", "text/plain")
+    ]
 
 
 def test_multiple_file_message_persists_all_metadata(client: TestClient):
-    _, user, _, user_token = bootstrap_admin_and_user(client)
-    conversation_id = create_conversation(client, user_token, "Multi")
-    files = [
-        ("files", ("a.txt", b"A", "text/plain")),
-        ("files", ("b.txt", b"B", "text/plain")),
-    ]
-    resp = client.post(
+    _, _, _, token = bootstrap_admin_and_user(client)
+    conversation_id = create_conversation(client, token, "Multi")
+    response = client.post(
         "/api/messages",
         data={"content": "Upload two files", "conversation_id": str(conversation_id)},
-        files=files,
-        headers=auth_header(user_token),
+        files=[
+            ("files", ("a.txt", b"A", "text/plain")),
+            ("files", ("b.txt", b"B", "text/plain")),
+        ],
+        headers=auth_header(token),
     )
-    assert resp.status_code == 200, resp.text
-    payload = resp.json()["message"]
-    stored_files = _fetch_rows("SELECT file_name FROM message_file WHERE message_id = ? ORDER BY id", (payload["id"],))
-    simplified = [row["file_name"].split("_", 1)[-1] for row in stored_files]
-    assert simplified == ["a.txt", "b.txt"]
+    assert response.status_code == 200, response.text
+    rows = _fetch_rows(
+        "SELECT file_name FROM message_file WHERE message_id = ? ORDER BY id",
+        (response.json()["message"]["id"],),
+    )
+    assert [row["file_name"] for row in rows] == ["a.txt", "b.txt"]
 
 
 def test_message_listing_for_user_and_admin(client: TestClient):
-    _, user, admin_token, user_token = bootstrap_admin_and_user(client)
-    conversation_id = create_conversation(client, user_token, "Review")
-    files = [("files", ("doc.txt", b"Review", "text/plain"))]
-    resp = client.post(
+    _, user, admin_token, token = bootstrap_admin_and_user(client)
+    conversation_id = create_conversation(client, token, "Review")
+    created = client.post(
         "/api/messages",
         data={"conversation_id": str(conversation_id), "content": "Review doc"},
-        files=files,
-        headers=auth_header(user_token),
+        files=[("files", ("doc.txt", b"Review", "text/plain"))],
+        headers=auth_header(token),
     )
-    assert resp.status_code == 200
-    wait_for_status(resp.json()["reply"]["id"], "completed")
+    assert created.status_code == 200, created.text
+    wait_for_status(created.json()["reply"]["id"], "completed")
 
-    resp = client.get(
+    user_response = client.get(
         "/api/messages",
         params={"conversation_id": conversation_id},
-        headers=auth_header(user_token),
+        headers=auth_header(token),
     )
-    assert resp.status_code == 200
-    user_messages = resp.json()
-    assert len(user_messages) == 1
-    assert user_messages[0]["sender_type"] == "user"
+    assert user_response.status_code == 200
+    assert user_response.json()["conversation_title"] == "Review"
+    assert [item["sender_type"] for item in user_response.json()["messages"]] == ["user"]
 
-    resp = client.get(
+    admin_response = client.get(
         "/api/messages",
         params={"user_id": user["id"], "conversation_id": conversation_id, "include_assistant": True},
         headers=auth_header(admin_token),
     )
-    assert resp.status_code == 200
-    admin_messages = resp.json()
-    assert len(admin_messages) == 2
-    assert any(msg["sender_type"] == "assistant" for msg in admin_messages)
+    assert admin_response.status_code == 200
+    assert [item["sender_type"] for item in admin_response.json()["messages"]] == ["user", "assistant"]
 
 
-def test_assistant_reply_generates_downloadable_file(client: TestClient):
-    _, user, _, user_token = bootstrap_admin_and_user(client)
-    conversation_id = create_conversation(client, user_token, "Assistant Files")
-    resp = client.post(
+def test_assistant_reply_is_returned_by_message_listing(client: TestClient):
+    _, _, _, token = bootstrap_admin_and_user(client)
+    conversation_id = create_conversation(client, token, "Assistant reply")
+    created = client.post(
         "/api/messages",
-        data={"content": "Generate a file", "conversation_id": str(conversation_id)},
-        headers=auth_header(user_token),
+        data={"content": "Generate a reply", "conversation_id": str(conversation_id)},
+        headers=auth_header(token),
     )
-    assert resp.status_code == 200, resp.text
-    assistant_id = resp.json()["reply"]["id"]
-    wait_for_status(assistant_id, "completed")
-
-    resp = client.get(
+    assert created.status_code == 200, created.text
+    wait_for_status(created.json()["reply"]["id"], "completed")
+    response = client.get(
         "/api/messages",
         params={"conversation_id": conversation_id, "include_assistant": True},
-        headers=auth_header(user_token),
+        headers=auth_header(token),
     )
-    assert resp.status_code == 200
-    assistant_messages = [msg for msg in resp.json() if msg["sender_type"] == "assistant"]
-    assert len(assistant_messages) == 1
-    assistant_message = assistant_messages[0]
-    assert assistant_message["files"]
-    assert "/chat_uploads/" in assistant_message["content"]
-
-    upload_root = Path(os.environ["CHAT_UPLOAD_ROOT"])
-    saved_path = upload_root / assistant_message["files"][0]["file_path"]
-    assert saved_path.exists()
+    assistant = next(item for item in response.json()["messages"] if item["sender_type"] == "assistant")
+    assert assistant["content"].startswith("Test response:")
+    assert assistant["files"] == []
 
 
 def test_file_only_message_with_no_text_persists(client: TestClient):
-    _, _, _, user_token = bootstrap_admin_and_user(client)
-    conversation_id = create_conversation(client, user_token, "File only")
-    files = [("files", ("img.png", b"\x89PNG", "image/png"))]
-    resp = client.post(
+    _, _, _, token = bootstrap_admin_and_user(client)
+    conversation_id = create_conversation(client, token, "File only")
+    response = client.post(
         "/api/messages",
         data={"content": "", "conversation_id": str(conversation_id)},
-        files=files,
-        headers=auth_header(user_token),
+        files=[("files", ("notes.txt", b"file only", "text/plain"))],
+        headers=auth_header(token),
     )
-    assert resp.status_code == 200, resp.text
-    payload = resp.json()["message"]
+    assert response.status_code == 200, response.text
+    payload = response.json()["message"]
     assert payload["content"] == ""
-    file_rows = _fetch_rows("SELECT file_name FROM message_file WHERE message_id = ?", (payload["id"],))
-    assert len(file_rows) == 1
-    assert file_rows[0]["file_name"] == "img.png"
+    rows = _fetch_rows("SELECT file_name FROM message_file WHERE message_id = ?", (payload["id"],))
+    assert [row["file_name"] for row in rows] == ["notes.txt"]
 
 
 def test_user_cannot_send_assistant_message(client: TestClient):
-    _, _, _, user_token = bootstrap_admin_and_user(client)
-    conversation_id = create_conversation(client, user_token)
-    resp = client.post(
+    _, _, _, token = bootstrap_admin_and_user(client)
+    conversation_id = create_conversation(client, token)
+    response = client.post(
         "/api/messages",
         data={"content": "Nope", "sender_type": "assistant", "conversation_id": str(conversation_id)},
-        headers=auth_header(user_token),
+        headers=auth_header(token),
     )
-    assert resp.status_code == 403
-    assert "Only admins can create assistant messages" in resp.text
+    assert response.status_code == 403
+    assert "Only admins can create assistant messages" in response.text
 
 
 def test_admin_can_send_assistant_message_without_reply(client: TestClient):
     admin, _, admin_token, _ = bootstrap_admin_and_user(client)
     conversation_id = create_conversation(client, admin_token)
-    resp = client.post(
+    response = client.post(
         "/api/messages",
         data={"content": "System notice", "sender_type": "assistant", "conversation_id": str(conversation_id)},
         headers=auth_header(admin_token),
     )
-    assert resp.status_code == 200, resp.text
-    payload = resp.json()
-    assert payload["reply"] is None
-    message_payload = payload["message"]
-    assert message_payload["sender_type"] == "assistant"
-
-    resp = client.get(
+    assert response.status_code == 200, response.text
+    assert response.json()["reply"] is None
+    listing = client.get(
         "/api/messages",
         params={"user_id": admin["id"], "conversation_id": conversation_id, "include_assistant": True},
         headers=auth_header(admin_token),
     )
-    assert resp.status_code == 200
-    admin_messages = resp.json()
-    assert len(admin_messages) == 1
-    assert admin_messages[0]["sender_type"] == "assistant"
+    assert [item["sender_type"] for item in listing.json()["messages"]] == ["assistant"]
 
 
 def test_invalid_sender_type_rejected(client: TestClient):
-    _, _, _, user_token = bootstrap_admin_and_user(client)
-    conversation_id = create_conversation(client, user_token)
-    resp = client.post(
+    _, _, _, token = bootstrap_admin_and_user(client)
+    conversation_id = create_conversation(client, token)
+    response = client.post(
         "/api/messages",
         data={"content": "Weird", "sender_type": "system", "conversation_id": str(conversation_id)},
-        headers=auth_header(user_token),
+        headers=auth_header(token),
     )
-    assert resp.status_code == 400
-    assert "Invalid sender type" in resp.text
+    assert response.status_code == 400
+    assert "Invalid sender type" in response.text
 
 
 def test_user_can_stop_pending_reply(client: TestClient):
-    _, _, _, user_token = bootstrap_admin_and_user(client)
-    conversation_id = create_conversation(client, user_token)
-    resp = client.post(
+    _, _, _, token = bootstrap_admin_and_user(client)
+    conversation_id = create_conversation(client, token)
+    created = client.post(
         "/api/messages",
         data={"content": "Please stop me", "conversation_id": str(conversation_id)},
-        headers=auth_header(user_token),
+        headers=auth_header(token),
     )
-    assert resp.status_code == 200
-    assistant_id = resp.json()["reply"]["id"]
-
-    stop_resp = client.post(
-        f"/api/messages/{assistant_id}/stop",
-        headers=auth_header(user_token),
-    )
-    assert stop_resp.status_code == 200
-    stopped_payload = stop_resp.json()
-    assert stopped_payload["status"] == "cancelled"
-    assert stopped_payload["stopped_at"] is not None
-
-    rows = _fetch_rows("SELECT status FROM message WHERE id = ?", (assistant_id,))
-    assert rows[0]["status"] == "cancelled"
+    assistant_id = created.json()["reply"]["id"]
+    stopped = client.post(f"/api/messages/{assistant_id}/stop", headers=auth_header(token))
+    assert stopped.status_code == 200
+    assert stopped.json()["status"] == "stopped"
+    assert stopped.json()["stopped_at"] is not None
+    assert _fetch_rows("SELECT status FROM message WHERE id = ?", (assistant_id,))[0]["status"] == "stopped"
 
 
 def test_messages_remain_isolated_between_conversations(client: TestClient):
-    _, _, _, user_token = bootstrap_admin_and_user(client)
-    conv_a = create_conversation(client, user_token, "Chat A")
-    conv_b = create_conversation(client, user_token, "Chat B")
+    _, _, _, token = bootstrap_admin_and_user(client)
+    conversation_a = create_conversation(client, token, "Chat A")
+    conversation_b = create_conversation(client, token, "Chat B")
+    for conversation_id, content in ((conversation_a, "Message for A"), (conversation_b, "Message for B")):
+        created = client.post(
+            "/api/messages",
+            data={"content": content, "conversation_id": str(conversation_id)},
+            headers=auth_header(token),
+        )
+        assert created.status_code == 200
+        wait_for_status(created.json()["reply"]["id"], "completed")
 
-    resp = client.post(
-        "/api/messages",
-        data={"content": "Message for A", "conversation_id": str(conv_a)},
-        headers=auth_header(user_token),
-    )
-    assert resp.status_code == 200
-    wait_for_status(resp.json()["reply"]["id"], "completed")
+    def list_for(conversation_id: int) -> list[dict]:
+        response = client.get(
+            "/api/messages",
+            params={"conversation_id": conversation_id, "include_assistant": True},
+            headers=auth_header(token),
+        )
+        assert response.status_code == 200
+        return response.json()["messages"]
 
-    resp = client.post(
-        "/api/messages",
-        data={"content": "Message for B", "conversation_id": str(conv_b)},
-        headers=auth_header(user_token),
-    )
-    assert resp.status_code == 200
-    wait_for_status(resp.json()["reply"]["id"], "completed")
-
-    resp_a = client.get(
-        "/api/messages",
-        params={"conversation_id": conv_a, "include_assistant": True},
-        headers=auth_header(user_token),
-    )
-    resp_b = client.get(
-        "/api/messages",
-        params={"conversation_id": conv_b, "include_assistant": True},
-        headers=auth_header(user_token),
-    )
-
-    assert resp_a.status_code == 200
-    assert resp_b.status_code == 200
-
-    msgs_a = resp_a.json()
-    msgs_b = resp_b.json()
-
-    assert len(msgs_a) == 2  # user + assistant reply
-    assert len(msgs_b) == 2
-    assert msgs_a[0]["content"] == "Message for A"
-    assert msgs_b[0]["content"] == "Message for B"
+    messages_a = list_for(conversation_a)
+    messages_b = list_for(conversation_b)
+    assert len(messages_a) == 2
+    assert len(messages_b) == 2
+    assert messages_a[0]["content"] == "Message for A"
+    assert messages_b[0]["content"] == "Message for B"

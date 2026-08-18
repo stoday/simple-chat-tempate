@@ -113,12 +113,23 @@ const renderedContent = computed(() => {
 
 const isUser = computed(() => props.message.role === 'user')
 const isPendingAssistant = computed(() => !isUser.value && props.message.status === 'pending')
+const executionEvents = computed(() => Array.isArray(props.message.executionEvents) ? props.message.executionEvents : [])
 const hasVisibleContent = computed(() => {
   const content = (props.message.content || '').trim()
   const hasFiles = Array.isArray(props.message.files) && props.message.files.length > 0
-  return content.length > 0 || hasFiles
+  return content.length > 0 || hasFiles || !!props.message.thinkingStatus || executionEvents.value.length > 0
 })
 const hidePendingPlaceholder = computed(() => isPendingAssistant.value && !hasVisibleContent.value)
+
+const formatExecutionValue = (value) => {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch (_error) {
+    return String(value)
+  }
+}
 
 const normalizeUploadUrl = (rawPath) => {
   if (!rawPath) return null
@@ -270,7 +281,48 @@ watch(renderedContent, async () => {
         </div>
       </div>
       
+      <div v-if="message.thinkingStatus" class="thinking-status" data-testid="thinking-status">
+        <i class="ph ph-circle-notch"></i>
+        <span>{{ message.thinkingStatus }}</span>
+      </div>
+
+      <details
+        v-if="executionEvents.length"
+        class="execution-details"
+        data-testid="execution-details"
+      >
+        <summary>
+          <span><i class="ph ph-terminal-window"></i> 執行詳情</span>
+          <span class="execution-count">{{ executionEvents.length }}</span>
+        </summary>
+        <div class="execution-timeline">
+          <div
+            v-for="event in executionEvents"
+            :key="`${event.sequence}-${event.type}`"
+            class="execution-event"
+            :class="`execution-${event.type}`"
+          >
+            <div class="execution-event-title">
+              <span>{{ event.type === 'thinking' ? '思考階段' : (event.payload?.name || event.type) }}</span>
+              <span v-if="event.payload?.status" class="execution-event-status">{{ event.payload.status }}</span>
+              <span v-if="event.payload?.call_id" class="execution-call-id">{{ event.payload.call_id }}</span>
+            </div>
+            <pre v-if="event.type === 'thinking'">{{ event.payload?.text }}</pre>
+            <pre v-else-if="event.type === 'tool_call'">{{ formatExecutionValue(event.payload?.arguments) }}</pre>
+            <pre v-else-if="event.type === 'tool_result'">{{ formatExecutionValue(event.payload?.result) }}</pre>
+          </div>
+        </div>
+      </details>
+
       <div class="message-content markdown-body" v-html="renderedContent" ref="containerRef"></div>
+      <div v-if="message.status === 'stopped'" class="message-terminal-status stopped-status">
+        <i class="ph ph-stop-circle"></i>
+        已停止生成
+      </div>
+      <div v-else-if="message.status === 'error'" class="message-terminal-status error-status">
+        <i class="ph ph-warning-circle"></i>
+        {{ message.streamError?.message || '回覆生成失敗' }}
+      </div>
       <div v-if="imageUrls.length" class="inline-images">
         <div v-for="url in imageUrls" :key="url" class="inline-image-card">
           <img
@@ -351,6 +403,103 @@ watch(renderedContent, async () => {
   padding-left: 0;
   padding-top: var(--space-2);
   padding-bottom: var(--space-2);
+}
+
+.thinking-status,
+.message-terminal-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.thinking-status i {
+  animation: thinking-spin 1s linear infinite;
+  color: var(--primary);
+}
+
+@keyframes thinking-spin {
+  to { transform: rotate(360deg); }
+}
+
+.execution-details {
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+}
+
+.execution-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.execution-count {
+  min-width: 1.5rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: rgba(139, 92, 246, 0.18);
+  color: var(--primary-light);
+  text-align: center;
+  font-size: 0.75rem;
+}
+
+.execution-timeline {
+  display: grid;
+  gap: 1px;
+  border-top: 1px solid var(--border-light);
+}
+
+.execution-event {
+  padding: var(--space-3);
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.execution-event-title {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.execution-event-status {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+
+.execution-call-id {
+  color: var(--text-tertiary);
+  font-family: monospace;
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+
+.execution-event pre {
+  margin: var(--space-2) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.stopped-status {
+  color: var(--text-secondary);
+}
+
+.error-status {
+  color: #fca5a5;
 }
 
 /* File Attachment Styles */
