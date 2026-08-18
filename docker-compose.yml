@@ -1,0 +1,18 @@
+services:
+  heranchat:
+    # Use the image you built locally, or override it with HERANCHAT_IMAGE.
+    image: ${HERANCHAT_IMAGE:-heranchat:latest}
+    container_name: heranchat
+    restart: unless-stopped
+    ports:
+      - "${HERANCHAT_PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      # Keep the SQLite database outside the container filesystem.
+      SIMPLECHAT_DB_PATH: /app/data/simplechat.db
+    volumes:
+      - heranchat_data:/app/data
+
+volumes:
+  heranchat_data:

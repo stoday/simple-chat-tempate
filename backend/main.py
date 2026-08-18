@@ -35,17 +35,6 @@ from .rag_state import (
 import akasha
 from .tools import get_agent, clear_agent_cache
 
-# Pre-initialize agent at module level (before any multiprocessing forks)
-# This ensures child processes inherit the cached agent
-import os
-from datetime import datetime
-_PROCESS_ID = os.getpid()
-_STARTUP_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-print(f"[MAIN] Process ID: {_PROCESS_ID}, Startup: {_STARTUP_TIME}")
-print(f"[MAIN] Pre-loading agent at module level...")
-_PRELOADED_AGENT = get_agent(stream=True)
-print(f"[MAIN] Agent pre-loaded successfully (PID: {_PROCESS_ID})")
-
 load_dotenv()
 
 SECRET_KEY = os.environ.get("SECRET_KEY")

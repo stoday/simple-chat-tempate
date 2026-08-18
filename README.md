@@ -59,6 +59,26 @@ SIMPLECHAT_DB_PATH=backend/simplechat.db
 CHAT_UPLOAD_ROOT=backend/chat_uploads
 ```
 
+### Docker 部署與 SQLite 持久化
+
+專案提供 `docker-compose.yml`，會將 SQLite 資料庫放在 named volume
+`heranchat_data`，因此重建容器時資料不會跟著容器刪除。
+
+```bash
+# 使用預設的 heranchat:latest image
+sudo docker compose up -d
+
+# 若 image 名稱不同
+sudo HERANCHAT_IMAGE=my-heranchat:latest docker compose up -d
+
+# 確認資料庫路徑
+sudo docker compose exec heranchat \
+  python -c "from backend.database import DB_PATH; print(DB_PATH)"
+```
+
+Compose 會在容器內使用 `/app/data/simplechat.db`。請勿使用
+`docker compose down -v`，因為 `-v` 會一併刪除 SQLite volume。
+
 > 💡 **提示**：產生 SECRET_KEY 的方法：
 > - Windows (PowerShell): `openssl rand -hex 32`
 > - Linux / macOS: `openssl rand -hex 32`
