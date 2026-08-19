@@ -494,6 +494,7 @@ const saveLlmConfig = async () => {
       <div>
         <h1>Settings</h1>
         <p>Manage your account preferences and workspace users.</p>
+        <span class="app-version">Frontend version {{ config?.app?.version || 'dev' }}</span>
       </div>
     </header>
 
@@ -836,6 +837,17 @@ const saveLlmConfig = async () => {
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 1rem;
   margin-top: 1rem;
+}
+
+.full-width {
+  grid-column: 1 / -1;
+}
+
+.app-version {
+  display: inline-block;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
 }
 
 label {

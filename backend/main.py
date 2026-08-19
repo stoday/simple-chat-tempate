@@ -488,7 +488,7 @@ def _load_app_config() -> dict[str, Any]:
             "default_role": "user",
         },
         "app": {
-            "version": "1.0.1",
+            "version": "1.4",
         },
         "uploads": {
             "user_extensions": [
