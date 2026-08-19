@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import json
 import re
 from urllib.parse import urlparse
@@ -41,6 +42,7 @@ from .streaming_events import (
 )
 
 import akasha
+from akasha.helper import call_model, handle_embeddings, handle_model
 from .tools import get_agent, clear_agent_cache
 
 load_dotenv()
@@ -285,6 +287,14 @@ class MssqlConfigUpdateRequest(BaseModel):
 class MssqlTestResponse(BaseModel):
     ok: bool
     detail: str
+
+
+class LlmModelTestRequest(BaseModel):
+    model_name: str
+
+
+class EmbeddingModelTestRequest(BaseModel):
+    embedding_model: str
 
 
 class LlmConfigResponse(BaseModel):
@@ -2082,6 +2092,64 @@ def update_llm_config(
     
     row = db.execute("SELECT * FROM llm_config WHERE id = 1").fetchone()
     return LlmConfigResponse(**dict(row))
+
+
+def _run_provider_test(operation, timeout_seconds: float = 30.0):
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(operation)
+    try:
+        return future.result(timeout=timeout_seconds), None
+    except FutureTimeoutError:
+        future.cancel()
+        return None, "Test timed out."
+    except Exception as exc:
+        return None, str(exc)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+@app.post("/api/admin/llm-config/test", response_model=MssqlTestResponse)
+def test_llm_model(
+    payload: LlmModelTestRequest,
+    db: sqlite3.Connection = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> MssqlTestResponse:
+    require_admin(current_user)
+    config = load_llm_config(db)
+
+    def operation():
+        model = handle_model(
+            payload.model_name,
+            temperature=config["temperature"],
+            max_output_tokens=config["max_output_tokens"],
+        )
+        return call_model(model, "測試")
+
+    response, error = _run_provider_test(operation)
+    if error:
+        return MssqlTestResponse(ok=False, detail=f"LLM model test failed: {error}")
+    if response is None or not str(response).strip():
+        return MssqlTestResponse(ok=False, detail="LLM model test failed: empty response.")
+    return MssqlTestResponse(ok=True, detail="LLM model test succeeded.")
+
+
+@app.post("/api/admin/embedding-config/test", response_model=MssqlTestResponse)
+def test_embedding_model(
+    payload: EmbeddingModelTestRequest,
+    current_user: UserResponse = Depends(get_current_user),
+) -> MssqlTestResponse:
+    require_admin(current_user)
+
+    def operation():
+        embeddings = handle_embeddings(payload.embedding_model)
+        return embeddings.embed_query("測試")
+
+    vector, error = _run_provider_test(operation)
+    if error:
+        return MssqlTestResponse(ok=False, detail=f"Embedding model test failed: {error}")
+    if vector is None or len(vector) == 0:
+        return MssqlTestResponse(ok=False, detail="Embedding model test failed: empty vector.")
+    return MssqlTestResponse(ok=True, detail="Embedding model test succeeded.")
 
 
 @app.get("/api/conversations", response_model=List[ConversationResponse])

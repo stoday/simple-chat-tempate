@@ -92,6 +92,8 @@ const mssqlForm = reactive({
 })
 const llmNotice = ref(null)
 const llmSaving = ref(false)
+const llmTestState = reactive({ llm: 'idle', embedding: 'idle' })
+const llmTestNotice = reactive({ llm: null, embedding: null })
 const llmForm = reactive({
   model_name: '',
   embedding_model: '',
@@ -482,6 +484,36 @@ const saveLlmConfig = async () => {
     llmSaving.value = false
   }
 }
+
+const testLlmModel = async () => {
+  llmTestState.llm = 'testing'
+  llmTestNotice.llm = null
+  try {
+    const { data } = await apiClient.post('/admin/llm-config/test', {
+      model_name: llmForm.model_name,
+    })
+    llmTestNotice.llm = { type: data?.ok ? 'success' : 'error', text: data?.detail || 'LLM model test failed.' }
+  } catch (err) {
+    llmTestNotice.llm = { type: 'error', text: err?.response?.data?.detail || 'LLM model test failed.' }
+  } finally {
+    llmTestState.llm = 'idle'
+  }
+}
+
+const testEmbeddingModel = async () => {
+  llmTestState.embedding = 'testing'
+  llmTestNotice.embedding = null
+  try {
+    const { data } = await apiClient.post('/admin/embedding-config/test', {
+      embedding_model: llmForm.embedding_model,
+    })
+    llmTestNotice.embedding = { type: data?.ok ? 'success' : 'error', text: data?.detail || 'Embedding model test failed.' }
+  } catch (err) {
+    llmTestNotice.embedding = { type: 'error', text: err?.response?.data?.detail || 'Embedding model test failed.' }
+  } finally {
+    llmTestState.embedding = 'idle'
+  }
+}
 </script>
 
 <template>
@@ -769,6 +801,11 @@ const saveLlmConfig = async () => {
           Model Name
           <input type="text" v-model="llmForm.model_name" placeholder="ollama:http://127.0.0.1:11434@gemma4:26b" />
           <small class="field-help">Examples: gemini:gemini-2.5-flash, openai:gpt-4o, ollama:http://127.0.0.1:11434@gemma4:26b</small>
+          <button class="btn btn-ghost test-model-btn" type="button" :disabled="llmTestState.llm === 'testing'" @click="testLlmModel">
+            <i :class="['ph', llmTestState.llm === 'testing' ? 'ph-circle-notch spinning' : 'ph-play']"></i>
+            {{ llmTestState.llm === 'testing' ? 'Testing...' : 'Test LLM Model' }}
+          </button>
+          <small v-if="llmTestNotice.llm" :class="['test-result', llmTestNotice.llm.type]">{{ llmTestNotice.llm.text }}</small>
         </label>
         <label>
           Temperature ({{ llmForm.temperature }})
@@ -786,6 +823,11 @@ const saveLlmConfig = async () => {
           Embedding Model
           <input type="text" v-model="llmForm.embedding_model" placeholder="gemini:gemini-embedding-001" />
           <small class="field-help">Example: gemini:gemini-embedding-001 or openai:text-embedding-3-small</small>
+          <button class="btn btn-ghost test-model-btn" type="button" :disabled="llmTestState.embedding === 'testing'" @click="testEmbeddingModel">
+            <i :class="['ph', llmTestState.embedding === 'testing' ? 'ph-circle-notch spinning' : 'ph-play']"></i>
+            {{ llmTestState.embedding === 'testing' ? 'Testing...' : 'Test Embedding Model' }}
+          </button>
+          <small v-if="llmTestNotice.embedding" :class="['test-result', llmTestNotice.embedding.type]">{{ llmTestNotice.embedding.text }}</small>
         </label>
         <label class="full-width">
           System Prompt
@@ -861,6 +903,31 @@ label {
 .field-help {
   font-size: 0.8rem;
   color: var(--text-secondary);
+}
+
+.test-model-btn {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+}
+
+.test-result {
+  font-size: 0.8rem;
+}
+
+.test-result.success {
+  color: #86efac;
+}
+
+.test-result.error {
+  color: #fca5a5;
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 input,
