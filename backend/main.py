@@ -1129,7 +1129,8 @@ def build_reply(
     user_upload_dir = None
     if owner_user_id is not None:
         upload_dir_path = ensure_user_upload_dir(owner_user_id, owner_display_name)
-        user_upload_dir = (Path("backend") / upload_dir_path.relative_to(BASE_DIR)).as_posix()
+        user_upload_dir = upload_dir_path.resolve().as_posix()
+        # user_upload_dir = (Path("backend") / upload_dir_path.relative_to(BASE_DIR)).as_posix()
     display_name = owner_display_name or "未提供"
     role = "未提供"
     if owner_user_id is not None:
