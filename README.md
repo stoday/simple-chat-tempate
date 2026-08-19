@@ -38,7 +38,7 @@ python -m venv .venv
 
 #### (2) 安裝依賴套件
 ```powershell
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
 ```
 
 #### (3) 設定環境變數
@@ -269,7 +269,7 @@ P2025_SIMPLECHAT/
 │   ├── database.py             # SQLite 初始化與連線
 │   ├── tools.py                # Agent 工具與設定
 │   ├── rag_state.py            # RAG 狀態管理
-│   ├── requirements.txt        # Python 依賴
+│   ├── requirements.txt        # Backend Python 依賴
 │   ├── chat_uploads/           # 使用者上傳檔案
 │   ├── rag_files/              # 管理員上傳的 RAG 檔案
 │   ├── Knowledge/              # RAG 知識庫索引

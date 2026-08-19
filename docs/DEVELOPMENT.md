@@ -25,7 +25,7 @@ backend/
 ├── chat_uploads/         # 使用者附件，會依 user_{id}[_displayname]/ 分類
 ├── rag_files/            # 管理員上傳的共用 RAG 檔案
 ├── tests/                # pytest 測試（auth + conversations + messages）
-└── requirements.txt
+└── backend/requirements.txt
 ```
 
 - **認證**：`/api/auth/register`、`/api/auth/login`、`/api/auth/me`。第一位註冊者自動成為 `admin`；之後的新註冊角色依 `config.toml` 的 `roles.default_role`。JWT 以 `SECRET_KEY` 簽署。
@@ -46,7 +46,7 @@ backend/
    cd backend
    python -m venv .venv
    .\.venv\Scripts\activate
-   pip install -r requirements.txt
+   pip install -r backend/requirements.txt
    ```
 2. **設定環境變數（.env）**
    ```

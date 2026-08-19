@@ -4,6 +4,6 @@ python-jose[cryptography]==3.3.0
 bcrypt==5.0.0
 python-multipart==0.0.9
 python-dotenv==1.0.1
-akasha-terminal==1.0
+akasha-terminal[light]>=1.7
 pytest==8.3.2
 httpx
