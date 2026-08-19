@@ -796,7 +796,7 @@ const testEmbeddingModel = async () => {
         {{ llmNotice.text }}
       </p>
 
-      <form class="form-grid" @submit.prevent="saveLlmConfig">
+      <form class="form-grid llm-config-form" @submit.prevent="saveLlmConfig">
         <label>
           Model Name
           <input type="text" v-model="llmForm.model_name" placeholder="ollama:http://127.0.0.1:11434@gemma4:26b" />
@@ -881,6 +881,10 @@ const testEmbeddingModel = async () => {
   margin-top: 1rem;
 }
 
+.llm-config-form {
+  grid-template-columns: 2fr repeat(3, minmax(0, 1fr));
+}
+
 .full-width {
   grid-column: 1 / -1;
 }
@@ -928,6 +932,12 @@ label {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+@media (max-width: 900px) {
+  .llm-config-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 input,
