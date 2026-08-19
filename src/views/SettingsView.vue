@@ -769,7 +769,7 @@ const saveLlmConfig = async () => {
           <input type="text" v-model="llmForm.model_name" placeholder="ollama:http://127.0.0.1:11434@gemma4:26b" />
           <small class="field-help">Examples: gemini:gemini-2.5-flash, openai:gpt-4o, ollama:http://127.0.0.1:11434@gemma4:26b</small>
         </label>
-        <label>
+        <label class="full-width">
           Embedding Model
           <input type="text" v-model="llmForm.embedding_model" placeholder="gemini:gemini-embedding-001" />
           <small class="field-help">Example: gemini:gemini-embedding-001 or openai:text-embedding-3-small</small>
