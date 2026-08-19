@@ -30,6 +30,7 @@ from .rag_state import (
     set_index_status,
     set_indexed_files,
     set_rag_instance,
+    clear_rag_instance,
 )
 from .streaming_events import (
     TERMINAL_EVENT_TYPES,
@@ -232,6 +233,12 @@ class RagFileResponse(BaseModel):
     size_bytes: Optional[int] = None
     uploaded_by: Optional[int] = None
     created_at: str
+    summary: Optional[str] = None
+    summary_error: Optional[str] = None
+    index_status: str = "pending"
+    indexed_at: Optional[str] = None
+    indexed_embedding_model: Optional[str] = None
+    index_error: Optional[str] = None
 
 
 class RagIndexRequest(BaseModel):
@@ -282,6 +289,7 @@ class MssqlTestResponse(BaseModel):
 
 class LlmConfigResponse(BaseModel):
     model_name: str
+    embedding_model: str
     temperature: float
     max_input_tokens: int
     max_output_tokens: int
@@ -291,6 +299,7 @@ class LlmConfigResponse(BaseModel):
 
 class LlmConfigUpdateRequest(BaseModel):
     model_name: Optional[str] = None
+    embedding_model: Optional[str] = None
     temperature: Optional[float] = None
     max_input_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
@@ -324,6 +333,20 @@ class LlmConfigUpdateRequest(BaseModel):
         if not provider or not provider_model:
             raise ValueError("model_name must be in provider:model format")
         return model_name
+
+    @validator("embedding_model")
+    def validate_embedding_model(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        embedding_model = value.strip()
+        if not embedding_model or any(ch.isspace() for ch in embedding_model):
+            raise ValueError("embedding_model must be a non-empty provider:model value")
+        if ":" not in embedding_model:
+            raise ValueError("embedding_model must be in provider:model format")
+        provider, provider_model = embedding_model.split(":", 1)
+        if not provider or not provider_model:
+            raise ValueError("embedding_model must be in provider:model format")
+        return embedding_model
 
 
 @dataclass
@@ -476,7 +499,10 @@ def _load_app_config() -> dict[str, Any]:
                 ".csv",
                 ".pptx"
             ],
-            "rag_extensions": [".pdf", ".docx", ".md", ".txt", ".csv", ".pptx"],
+            "rag_extensions": [
+                ".pdf", ".doc", ".docx", ".md", ".csv", ".txt",
+                ".xls", ".xlsx", ".ppt", ".pptx",
+            ],
         },
         "theme": {
             "profile": "tech",
@@ -826,6 +852,12 @@ def row_to_rag_file(row: sqlite3.Row) -> RagFileResponse:
         size_bytes=row["size_bytes"],
         uploaded_by=row["uploaded_by"],
         created_at=row["created_at"],
+        summary=row["summary"],
+        summary_error=row["summary_error"],
+        index_status=row["index_status"],
+        indexed_at=row["indexed_at"],
+        indexed_embedding_model=row["indexed_embedding_model"],
+        index_error=row["index_error"],
     )
 
 
@@ -1714,44 +1746,63 @@ def index_rag_files(
     current_user: UserResponse = Depends(get_current_user),
 ) -> RagIndexResponse:
     require_admin(current_user)
+    cfg = load_llm_config(db)
     if payload.file_ids:
         rows = db.execute(
-            "SELECT id, file_path FROM rag_file WHERE id IN ({})".format(
+            "SELECT id, file_path, index_status, indexed_embedding_model FROM rag_file WHERE id IN ({})".format(
                 ",".join("?" for _ in payload.file_ids)
             ),
             payload.file_ids,
         ).fetchall()
     else:
-        rows = db.execute("SELECT id, file_path FROM rag_file").fetchall()
+        rows = db.execute(
+            "SELECT id, file_path, index_status, indexed_embedding_model FROM rag_file"
+        ).fetchall()
+    candidate_count = len(rows)
+    rows = [
+        row
+        for row in rows
+        if payload.rebuild
+        or row["index_status"] != "indexed"
+        or row["indexed_embedding_model"] != cfg["embedding_model"]
+    ]
     file_ids = [row["id"] for row in rows]
     if not file_ids:
+        if candidate_count:
+            return RagIndexResponse(ok=True, detail="No files require indexing.")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No RAG files to index")
 
-    data_sources = []
+    indexed_rows = []
+    source_paths: list[Path] = []
     for row in rows:
         file_path = RAG_UPLOAD_ROOT / row["file_path"]
         if file_path.exists():
-            relative_path = (Path("backend") / "rag_files" / row["file_path"]).as_posix()
-            data_sources.append(relative_path)
+            indexed_rows.append(row)
+            source_paths.append(file_path)
+    rows = indexed_rows
+    file_ids = [row["id"] for row in rows]
+    data_sources = [path.as_posix() for path in source_paths]
     if not data_sources:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No RAG files found on disk")
     
-    print(data_sources)
-
     started_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     set_index_status(True, started_at)
-    
-    ak = akasha.RAG(
-        embeddings="gemini:gemini-embedding-001",
-        model="gemini:gemini-2.5-flash",
-        max_input_tokens=3000,
-        keep_logs=True,
-        verbose=True)
 
     completed_at = None
     indexed_ok = False
     try:
-        set_rag_instance(ak, data_sources)
+        ak = akasha.RAG(
+            embeddings=cfg["embedding_model"],
+            model=cfg["model_name"],
+            max_input_tokens=3000,
+            keep_logs=True,
+            verbose=True)
+        set_rag_instance(
+            ak,
+            data_sources,
+            model=cfg["model_name"],
+            embedding_model=cfg["embedding_model"],
+        )
         print('*** ' + str(data_sources))
         test_response = ak(data_sources=data_sources, prompt="測試")
         if test_response:
@@ -1759,34 +1810,67 @@ def index_rag_files(
         indexed_ok = True
         completed_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
         set_indexed_files(file_ids, completed_at)
-        summarizer = akasha.summary(
-            model="openai:gpt-4o",
-            sum_type="map_reduce",
-            chunk_size=1000,
-            sum_len=100,
-            language="zh",
-            keep_logs=True,
-            verbose=True,
-            max_input_tokens=8000,
+        db.execute(
+            "UPDATE rag_file SET index_status = 'indexed', indexed_at = ?, "
+            "indexed_embedding_model = ?, index_error = NULL "
+            "WHERE id IN ({})".format(",".join("?" for _ in file_ids)),
+            [completed_at, cfg["embedding_model"], *file_ids],
         )
-        for row in rows:
-            file_path = RAG_UPLOAD_ROOT / row["file_path"]
-            if not file_path.exists():
-                continue
-            try:
-                summary_result = summarizer(content=[str(file_path)])
-            except Exception as exc:
-                print(f"Summary failed for {file_path}: {exc}")
-                continue
-            if isinstance(summary_result, (list, tuple)):
-                summary_text = "\n".join(str(item) for item in summary_result)
-            else:
-                summary_text = str(summary_result)
-            db.execute(
-                "UPDATE rag_file SET summary = ?, summary_updated_at = datetime('now') WHERE id = ?",
-                (summary_text, row["id"]),
+        try:
+            summarizer = akasha.summary(
+                model=cfg["model_name"],
+                sum_type="map_reduce",
+                chunk_size=1000,
+                sum_len=100,
+                language="zh",
+                keep_logs=True,
+                verbose=True,
+                max_input_tokens=8000,
             )
+        except Exception as exc:
+            summarizer = None
+            summary_error = str(exc)
+            db.executemany(
+                "UPDATE rag_file SET summary_error = ? WHERE id = ?",
+                [(summary_error, row["id"]) for row in rows],
+            )
+        if summarizer is not None:
+            for row in rows:
+                file_path = RAG_UPLOAD_ROOT / row["file_path"]
+                if not file_path.exists():
+                    continue
+                try:
+                    summary_result = summarizer(content=[str(file_path)])
+                except Exception as exc:
+                    print(f"Summary failed for {file_path}: {exc}")
+                    db.execute(
+                        "UPDATE rag_file SET summary_error = ? WHERE id = ?",
+                        (str(exc), row["id"]),
+                    )
+                    continue
+                if isinstance(summary_result, (list, tuple)):
+                    summary_text = "\n".join(str(item) for item in summary_result)
+                else:
+                    summary_text = str(summary_result)
+                db.execute(
+                    "UPDATE rag_file SET summary = ?, summary_updated_at = datetime('now'), "
+                    "summary_error = NULL WHERE id = ?",
+                    (summary_text, row["id"]),
+                )
         db.commit()
+    except Exception as exc:
+        error_text = str(exc)
+        db.execute(
+            "UPDATE rag_file SET index_status = 'failed', indexed_at = NULL, "
+            "indexed_embedding_model = NULL, index_error = ? "
+            "WHERE id IN ({})".format(",".join("?" for _ in file_ids)),
+            [error_text, *file_ids],
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to build RAG index: {error_text}",
+        ) from exc
     finally:
         set_index_status(False, started_at)
     
@@ -1801,13 +1885,18 @@ def index_rag_files(
 
 @app.get("/api/admin/rag-files/index/status", response_model=RagIndexStatusResponse)
 def get_rag_index_status(
+    db: sqlite3.Connection = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ) -> RagIndexStatusResponse:
     require_admin(current_user)
     status_payload = get_index_status()
-    indexed_files = get_indexed_files()
+    rows = db.execute(
+        "SELECT id, indexed_at FROM rag_file "
+        "WHERE index_status = 'indexed' AND indexed_at IS NOT NULL"
+    ).fetchall()
     indexed_list = [
-        RagIndexedFile(file_id=file_id, indexed_at=ts) for file_id, ts in indexed_files.items()
+        RagIndexedFile(file_id=row["id"], indexed_at=row["indexed_at"])
+        for row in rows
     ]
     return RagIndexStatusResponse(
         indexing=bool(status_payload.get("indexing")),
@@ -1843,6 +1932,7 @@ def delete_rag_file(
     db.commit()
     if file_path.exists():
         file_path.unlink()
+    clear_rag_instance()
     return DeleteResponse(detail="RAG file deleted")
 
 
@@ -1947,11 +2037,18 @@ def update_llm_config(
     current_user: UserResponse = Depends(get_current_user),
 ) -> LlmConfigResponse:
     require_admin(current_user)
+    current_config = db.execute(
+        "SELECT embedding_model FROM llm_config WHERE id = 1"
+    ).fetchone()
+    previous_embedding_model = current_config["embedding_model"] if current_config else None
     updates = []
     params: List[Any] = []
     if payload.model_name is not None:
         updates.append("model_name = ?")
         params.append(payload.model_name)
+    if payload.embedding_model is not None:
+        updates.append("embedding_model = ?")
+        params.append(payload.embedding_model)
     if payload.temperature is not None:
         updates.append("temperature = ?")
         params.append(payload.temperature)
@@ -1972,6 +2069,15 @@ def update_llm_config(
     params.append(1) # ID = 1
     
     db.execute(f"UPDATE llm_config SET {', '.join(updates)} WHERE id = ?", params)
+    if (
+        payload.embedding_model is not None
+        and payload.embedding_model != previous_embedding_model
+    ):
+        db.execute(
+            "UPDATE rag_file SET index_status = 'rebuild_required' "
+            "WHERE index_status = 'indexed' AND indexed_embedding_model != ?",
+            (payload.embedding_model,),
+        )
     db.commit()
     
     row = db.execute("SELECT * FROM llm_config WHERE id = 1").fetchone()

@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS rag_file (
     size_bytes INTEGER,
     summary TEXT,
     summary_updated_at TEXT,
+    summary_error TEXT,
+    index_status TEXT NOT NULL DEFAULT 'pending',
+    indexed_at TEXT,
+    indexed_embedding_model TEXT,
+    index_error TEXT,
     uploaded_by INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY(uploaded_by) REFERENCES user(id) ON DELETE SET NULL
@@ -102,6 +107,7 @@ LLM_CONFIG_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS llm_config (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     model_name TEXT NOT NULL DEFAULT 'gemini:gemini-2.5-flash',
+    embedding_model TEXT NOT NULL DEFAULT 'gemini:gemini-embedding-001',
     temperature REAL NOT NULL DEFAULT 0.7,
     max_input_tokens INTEGER NOT NULL DEFAULT 1048576,
     max_output_tokens INTEGER NOT NULL DEFAULT 8192,
@@ -133,6 +139,7 @@ def init_db() -> None:
         
         ensure_message_columns(conn)
         ensure_rag_file_columns(conn)
+        ensure_llm_config_columns(conn)
         conn.commit()
 
 
@@ -156,6 +163,28 @@ def ensure_rag_file_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE rag_file ADD COLUMN summary TEXT")
     if "summary_updated_at" not in columns:
         conn.execute("ALTER TABLE rag_file ADD COLUMN summary_updated_at TEXT")
+    if "summary_error" not in columns:
+        conn.execute("ALTER TABLE rag_file ADD COLUMN summary_error TEXT")
+    if "index_status" not in columns:
+        conn.execute(
+            "ALTER TABLE rag_file ADD COLUMN index_status TEXT NOT NULL DEFAULT 'pending'"
+        )
+    if "indexed_at" not in columns:
+        conn.execute("ALTER TABLE rag_file ADD COLUMN indexed_at TEXT")
+    if "indexed_embedding_model" not in columns:
+        conn.execute("ALTER TABLE rag_file ADD COLUMN indexed_embedding_model TEXT")
+    if "index_error" not in columns:
+        conn.execute("ALTER TABLE rag_file ADD COLUMN index_error TEXT")
+
+
+def ensure_llm_config_columns(conn: sqlite3.Connection) -> None:
+    info = conn.execute("PRAGMA table_info(llm_config)").fetchall()
+    columns = {row[1] for row in info}
+    if "embedding_model" not in columns:
+        conn.execute(
+            "ALTER TABLE llm_config ADD COLUMN embedding_model TEXT NOT NULL "
+            "DEFAULT 'gemini:gemini-embedding-001'"
+        )
 
 
 def get_connection() -> sqlite3.Connection:
@@ -179,6 +208,7 @@ def load_llm_config(db: sqlite3.Connection) -> dict:
         return dict(row)
     return {
         "model_name": "gemini:gemini-2.5-flash",
+        "embedding_model": "gemini:gemini-embedding-001",
         "temperature": 0.7,
         "max_input_tokens": 1048576,
         "max_output_tokens": 8192,

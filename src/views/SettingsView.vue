@@ -94,6 +94,7 @@ const llmNotice = ref(null)
 const llmSaving = ref(false)
 const llmForm = reactive({
   model_name: '',
+  embedding_model: '',
   temperature: 0.7,
   max_input_tokens: 1048576,
   max_output_tokens: 8192,
@@ -158,6 +159,18 @@ const getIndexedAt = (fileId) => {
   return match?.indexed_at || null
 }
 
+const getIndexStatus = (file) => file?.index_status || (getIndexedAt(file?.id) ? 'indexed' : 'pending')
+
+const indexStatusLabel = (file) => {
+  const labels = {
+    pending: 'Pending',
+    indexed: 'Indexed',
+    rebuild_required: 'Rebuild required',
+    failed: 'Failed',
+  }
+  return labels[getIndexStatus(file)] || 'Pending'
+}
+
 const loadRagIndexStatus = async () => {
   if (!isAdmin.value) return
   try {
@@ -218,6 +231,7 @@ const loadLlmConfig = async () => {
   try {
     const { data } = await apiClient.get('/admin/llm-config')
     llmForm.model_name = data?.model_name || ''
+    llmForm.embedding_model = data?.embedding_model || ''
     llmForm.temperature = data?.temperature ?? 0.7
     llmForm.max_input_tokens = data?.max_input_tokens ?? 1048576
     llmForm.max_output_tokens = data?.max_output_tokens ?? 8192
@@ -448,6 +462,7 @@ const saveLlmConfig = async () => {
   try {
     const payload = {
       model_name: llmForm.model_name,
+      embedding_model: llmForm.embedding_model,
       temperature: Number(llmForm.temperature),
       max_input_tokens: Number(llmForm.max_input_tokens),
       max_output_tokens: Number(llmForm.max_output_tokens),
@@ -455,6 +470,7 @@ const saveLlmConfig = async () => {
     }
     const { data } = await apiClient.patch('/admin/llm-config', payload)
     llmForm.model_name = data?.model_name || ''
+    llmForm.embedding_model = data?.embedding_model || ''
     llmForm.temperature = data?.temperature ?? 0.7
     llmForm.max_input_tokens = data?.max_input_tokens ?? 1048576
     llmForm.max_output_tokens = data?.max_output_tokens ?? 8192
@@ -636,7 +652,7 @@ const saveLlmConfig = async () => {
             type="file"
             class="upload-input"
             multiple
-            accept=".pdf,.doc,.docx,.md,.csv,.txt,.xls,.xlsx"
+            accept=".pdf,.doc,.docx,.md,.csv,.txt,.xls,.xlsx,.ppt,.pptx"
             @change="handleRagUpload"
             :disabled="ragUploading"
           />
@@ -644,7 +660,7 @@ const saveLlmConfig = async () => {
           {{ ragUploading ? 'Uploading...' : 'Add Files' }}
         </label>
         <span class="hint">Drag & drop files here or click Add Files.</span>
-        <span class="hint">Accepted: pdf, doc, docx, md, csv, txt, xls, xlsx.</span>
+        <span class="hint">Accepted: pdf, doc, docx, md, csv, txt, xls, xlsx, ppt, pptx.</span>
       </div>
 
       <div v-if="ragLoading" class="loading-state">
@@ -667,10 +683,9 @@ const saveLlmConfig = async () => {
             <td>{{ formatBytes(file.size_bytes) }}</td>
             <td>{{ file.created_at }}</td>
             <td>
-              <span v-if="getIndexedAt(file.id)">
-                Success ({{ formatIndexTime(getIndexedAt(file.id)) }})
-              </span>
-              <span v-else>-</span>
+              <span>{{ indexStatusLabel(file) }}</span>
+              <small v-if="file.indexed_at"> ({{ formatIndexTime(file.indexed_at) }})</small>
+              <small v-if="file.index_error" class="field-help">{{ file.index_error }}</small>
             </td>
             <td>
               <button class="btn btn-ghost" type="button" @click="downloadRagFile(file)">
@@ -753,6 +768,11 @@ const saveLlmConfig = async () => {
           Model Name
           <input type="text" v-model="llmForm.model_name" placeholder="ollama:http://127.0.0.1:11434@gemma4:26b" />
           <small class="field-help">Examples: gemini:gemini-2.5-flash, openai:gpt-4o, ollama:http://127.0.0.1:11434@gemma4:26b</small>
+        </label>
+        <label>
+          Embedding Model
+          <input type="text" v-model="llmForm.embedding_model" placeholder="gemini:gemini-embedding-001" />
+          <small class="field-help">Example: gemini:gemini-embedding-001 or openai:text-embedding-3-small</small>
         </label>
         <label>
           Temperature ({{ llmForm.temperature }})

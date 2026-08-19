@@ -4,19 +4,43 @@ from typing import List, Optional, Any, Dict
 
 _rag_instance: Optional[Any] = None
 _rag_data_sources: List[str] = []
+_rag_model: Optional[str] = None
+_rag_embedding_model: Optional[str] = None
 _rag_indexing: bool = False
 _rag_started_at: Optional[str] = None
 _rag_indexed_files: Dict[int, str] = {}
 
 
-def set_rag_instance(instance: Any, data_source: List[str]) -> None:
-    global _rag_instance, _rag_data_source
+def set_rag_instance(
+    instance: Any,
+    data_source: List[str],
+    model: Optional[str] = None,
+    embedding_model: Optional[str] = None,
+) -> None:
+    global _rag_instance, _rag_data_sources, _rag_model, _rag_embedding_model
     _rag_instance = instance
-    _rag_data_source = list(data_source)
+    _rag_data_sources = list(data_source)
+    _rag_model = model
+    _rag_embedding_model = embedding_model
 
 
-def get_rag_instance() -> Optional[Any]:
+def get_rag_instance(
+    model: Optional[str] = None,
+    embedding_model: Optional[str] = None,
+) -> Optional[Any]:
+    if model is not None and model != _rag_model:
+        return None
+    if embedding_model is not None and embedding_model != _rag_embedding_model:
+        return None
     return _rag_instance
+
+
+def clear_rag_instance() -> None:
+    global _rag_instance, _rag_data_sources, _rag_model, _rag_embedding_model
+    _rag_instance = None
+    _rag_data_sources = []
+    _rag_model = None
+    _rag_embedding_model = None
 
 
 def get_rag_data_sources() -> List[str]:

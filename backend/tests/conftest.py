@@ -14,9 +14,12 @@ def client(tmp_path, monkeypatch):
     backend_root = Path(__file__).resolve().parents[1]
     upload_directory = TemporaryDirectory(prefix=".test-chat-uploads-", dir=backend_root)
     upload_root = Path(upload_directory.name)
+    rag_upload_directory = TemporaryDirectory(prefix=".test-rag-uploads-", dir=backend_root)
+    rag_upload_root = Path(rag_upload_directory.name)
     monkeypatch.setenv("SECRET_KEY", "testsecret")
     monkeypatch.setenv("SIMPLECHAT_DB_PATH", str(db_path))
     monkeypatch.setenv("CHAT_UPLOAD_ROOT", str(upload_root))
+    monkeypatch.setenv("RAG_UPLOAD_ROOT", str(rag_upload_root))
 
     import backend.database as database
     import backend.main as main
@@ -40,7 +43,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "SIMULATED_REPLY_DELAY", 0)
 
     try:
-        with TestClient(main.app) as test_client:
+        with TestClient(main.app, raise_server_exceptions=False) as test_client:
             yield test_client
     finally:
         upload_directory.cleanup()
+        rag_upload_directory.cleanup()

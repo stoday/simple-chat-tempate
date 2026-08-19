@@ -19,7 +19,7 @@ default_role = "user"
 [uploads]
 # Allowed file extensions (lowercase, with dot).
 user_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", "ppt", "pptx"]
-rag_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", "ppt", "pptx"]
+rag_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", ".xls", ".xlsx", ".ppt", ".pptx"]
 
 [app]
 version = "1.3"

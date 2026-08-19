@@ -5,6 +5,8 @@ from .rag_state import get_rag_data_sources, get_rag_instance
 import pandas as pd
 import os
 import re
+import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -13,14 +15,19 @@ from typing import List
 import rich
 import traceback
 from .database import get_connection, load_llm_config
+from .rag_library import get_searchable_rag_sources
 
 
 def _fetch_rag_summaries():
     conn = None
     try:
         conn = get_connection()
+        cfg = load_llm_config(conn)
         rows = conn.execute(
-            "SELECT id, file_name, summary FROM rag_file ORDER BY created_at DESC"
+            "SELECT id, file_name, summary FROM rag_file "
+            "WHERE index_status = 'indexed' AND indexed_embedding_model = ? "
+            "ORDER BY created_at DESC",
+            (cfg["embedding_model"],),
         ).fetchall()
         return rows
     except Exception:
@@ -37,11 +44,18 @@ def _get_rag_summary_version() -> str:
     conn = None
     try:
         conn = get_connection()
-        row = conn.execute(
-            "SELECT MAX(summary_updated_at) AS last_updated FROM rag_file"
-        ).fetchone()
-        value = row["last_updated"] if row else None
-        return value or ""
+        config = conn.execute("SELECT * FROM llm_config WHERE id = 1").fetchone()
+        rag_rows = conn.execute(
+            "SELECT id, index_status, indexed_embedding_model, indexed_at, "
+            "summary, summary_error FROM rag_file ORDER BY id"
+        ).fetchall()
+        payload = {
+            "config": dict(config) if config else {},
+            "rag_files": [dict(row) for row in rag_rows],
+        }
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
     except Exception:
         return ""
     finally:
@@ -67,14 +81,15 @@ def _build_rag_data_sources():
     conn = None
     try:
         conn = get_connection()
-        rows = conn.execute(
-            "SELECT file_path FROM rag_file ORDER BY created_at DESC"
-        ).fetchall()
-        data_sources = []
-        for row in rows:
-            relative_path = (Path("backend") / "rag_files" / row["file_path"]).as_posix()
-            data_sources.append(relative_path)
-        return data_sources
+        cfg = load_llm_config(conn)
+        return [
+            path.as_posix()
+            for path in get_searchable_rag_sources(
+                conn,
+                Path(os.environ.get("RAG_UPLOAD_ROOT", Path(__file__).resolve().parent / "rag_files")),
+                cfg["embedding_model"],
+            )
+        ]
     except Exception:
         return []
     finally:
@@ -563,14 +578,25 @@ google_search_tool = akasha.create_tool(
 # 定義一個使用文件檢索增強生成（RAG）技術的工具
 def documents_rag_function(query: str) -> str:
     rich.print("Executing documents_rag_tool...")
-    ak = get_rag_instance()
+    db = get_connection()
+    try:
+        cfg = load_llm_config(db)
+    finally:
+        db.close()
+    ak = get_rag_instance(
+        model=cfg["model_name"], embedding_model=cfg["embedding_model"]
+    )
     if ak is None:
-        ak = akasha.RAG(embeddings="openai:text-embedding-3-small",
-                        model="openai:gpt-4o",
-                        max_input_tokens=3000,
-                        keep_logs=True,
-                        verbose=True)
-    data_sources = get_rag_data_sources() or _build_rag_data_sources()
+        ak = akasha.RAG(
+            embeddings=cfg["embedding_model"],
+            model=cfg["model_name"],
+            max_input_tokens=3000,
+            keep_logs=True,
+            verbose=True,
+        )
+    data_sources = _build_rag_data_sources()
+    if not data_sources:
+        return "目前沒有已建立索引的 RAG 文件。"
     response = ak(data_sources=data_sources, prompt=query)
 
     return response
@@ -618,17 +644,18 @@ def build_agent(stream: bool = False):
         db.close()
         
     documents_rag_tool = build_documents_rag_tool()
+    tool_list = [today_tool,
+                 table_db_content_tool,
+                 sql_query_tool,
+                 check_rules_tool,
+                 exec_python_tool,
+                 google_search_tool,
+                 upload_file_qa_tool,
+                 at.saveJSON_tool()]
+    if _build_rag_data_sources():
+        tool_list.insert(5, documents_rag_tool)
     return akasha.agents(
-        tools=[today_tool,
-               table_db_content_tool,
-               sql_query_tool,
-               check_rules_tool,
-               exec_python_tool,
-               documents_rag_tool,
-               google_search_tool,
-               upload_file_qa_tool,
-               at.saveJSON_tool()
-               ],
+        tools=tool_list,
         model=cfg["model_name"],
         temperature=cfg["temperature"],
         system_prompt=cfg.get("system_prompt") or "",
@@ -656,12 +683,14 @@ class AgentThreadLocal(threading.local):
         super().__init__()
         self._agent = None
         self._stream = None
+        self._version = None
 
     def get_agent(self, stream: bool = False):
         import sys
         
         # Check if this thread already has a cached agent
-        if self._agent is not None and self._stream == stream:
+        version = _get_rag_summary_version()
+        if self._agent is not None and self._stream == stream and self._version == version:
             tid = threading.get_ident()
             msg = f"[AGENT CACHE] Using cached agent in Thread {tid} (stream={stream})"
             print(msg, flush=True)
@@ -677,11 +706,13 @@ class AgentThreadLocal(threading.local):
         agent = build_agent(stream=stream)
         self._agent = agent
         self._stream = stream
+        self._version = version
         return agent
 
     def clear_cache(self):
         self._agent = None
         self._stream = None
+        self._version = None
 
 
 _thread_local_storage = AgentThreadLocal()
