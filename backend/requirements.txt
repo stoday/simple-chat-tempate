@@ -8,3 +8,4 @@ akasha-terminal[light]>=1.7
 pytest==8.3.2
 httpx
 email-validator==2.3.0
+pyodbc
