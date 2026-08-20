@@ -414,11 +414,15 @@ check_rules_tool = akasha.create_tool(
 import ast
 
 # 定義一個工具來執行 Python 代碼 (Subprocess 穩定版)
-def exec_python_code(code, output_path: str = "./backend/chat_uploads/"):
+def exec_python_code(code, output_path: str | None = None):
     rich.print("Executing exec_python_code tool (subprocess mode)...")
     
     # 1. 確保目錄存在
-    output_dir = Path(output_path)
+    configured_output_path = output_path or os.environ.get(
+        "CHAT_UPLOAD_ROOT",
+        str(Path(__file__).resolve().parent / "chat_uploads"),
+    )
+    output_dir = Path(configured_output_path).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     
     codegen_dir = Path("./backend/codegen")
@@ -432,6 +436,13 @@ def exec_python_code(code, output_path: str = "./backend/chat_uploads/"):
     try:
         fixed_code = code
         if isinstance(fixed_code, str):
+            # Generated code historically used ./backend/chat_uploads. Rewrite
+            # it to the same root exposed by the /chat_uploads static mount.
+            fixed_code = re.sub(
+                r"(?<![\w])(?:\.[/\\])?backend[/\\]+chat_uploads",
+                output_dir.as_posix(),
+                fixed_code,
+            )
             # 針對 LLM 可能產生的雙重或多重轉義進行循環修復
             # 我們會不斷尝试還原，直到程式碼可以被正確解析為止
             max_attempts = 3
