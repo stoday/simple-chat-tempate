@@ -227,9 +227,31 @@ def load_mssql_config_from_db():
             pass
 
 
+def _sql_tool_result(*, ok, message=None, result_markdown=None, error_type=None):
+    """Return a machine-readable result that the agent can explain to users."""
+    payload = {"ok": ok}
+    if ok:
+        payload["result_markdown"] = result_markdown or ""
+    else:
+        payload.update(
+            {
+                "error_type": error_type or "SQLQueryError",
+                "message": message or "Unknown SQL query error",
+                "retryable": False,
+                "instruction": (
+                    "Explain this failure to the user in plain language. "
+                    "Do not guess SQL identifiers or retry the query unless "
+                    "the user or a verified schema provides a correction."
+                ),
+            }
+        )
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def execute_sql_query(query):
     import pyodbc
     import pandas as pd
+    sqlserver_conn = None
     # 執行 MSSQL 查詢並返回結果
     # 使用 pyodbc 連接資料庫檔案，用 pandas 讀取資料
     # 連線 SQL Server
@@ -286,17 +308,22 @@ def execute_sql_query(query):
         outcome = pd.read_sql_query(query, sqlserver_conn)
         # 將結果轉為 markdown 格式
         result_markdown = outcome.to_markdown(index=False, tablefmt="pipe")
-        return result_markdown
+        return _sql_tool_result(ok=True, result_markdown=result_markdown)
 
     except Exception as e:
         print(traceback.format_exc())
-        return f"執行 SQL 查詢時發生錯誤: {e}"
+        return _sql_tool_result(
+            ok=False,
+            error_type=type(e).__name__,
+            message=str(e),
+        )
 
     finally:
-        try:
-            sqlserver_conn.close()
-        except Exception:
-            pass
+        if sqlserver_conn is not None:
+            try:
+                sqlserver_conn.close()
+            except Exception:
+                pass
 
 
 # 創建工具
@@ -306,6 +333,8 @@ sql_query_tool = akasha.create_tool(
     這是一個執行 MSSQL 語法來作查詢的工具，可以用來查詢銷售庫存或業務的資料庫中的資料。輸入參數 query 為 MSSQL 查詢語句。
     範例: 
     - SELECT * FROM pmpsa WHERE pmpsa.pmpsa_ent=168;
+    The result is JSON. When ok is false, explain the error to the user and
+    do not guess identifiers or retry without verified schema information.
     """,
     func=execute_sql_query
 )
@@ -337,6 +366,12 @@ def revising_prompt_tool(prompt):
 def check_rules():
     # 定義一個最後詳細檢查使用者需求與產生的相對應 sql 指令，是否符合規則的工具
     sale_rules = '''
+    # SQL Server object naming:
+    - The database is HERAN and the default schema is dbo.
+    - Always use three-part names for these sales tables: [HERAN].[dbo].[smdob], [HERAN].[dbo].[smdoa], and [HERAN].[dbo].[smrta].
+    - Never use HERAN.smdob or other two-part names; HERAN is the database, not the schema.
+    - Never treat values in *_ent columns as database or schema names.
+
     # 銷售與出貨：
     - 計算銷售量時，就要統計 smdob_docno (單據號碼) 出現的次數，而非使用 smdob_qty (數量) 欄位，也不是 smdob_itemno (產品編號) 欄位。
     - 銷售的出貨日期請以 smdoa 表單的 smdoa_pstdt (資料過帳日) 為準。而非使用 smdoa_docdt (單據日期)，也不是 smdob_007 (預計出貨日期)。
@@ -346,10 +381,10 @@ def check_rules():
     SELECT TOP 5
   min(smrta.smrta_002) AS 業務姓名, --smrta_002	業務簡稱
   SUM(smdob.smdob_005) AS 總銷售金額
-FROM smdob
-JOIN smdoa
+ FROM [HERAN].[dbo].[smdob]
+ JOIN [HERAN].[dbo].[smdoa]
   ON smdoa_ent = smdob_ent and smdoa_site = smdob_site and smdob.smdob_docno = smdoa.smdoa_docno
-JOIN smrta
+ JOIN [HERAN].[dbo].[smrta]
   ON smrta.smrta_ent = smdob.smdob_ent AND smrta.smrta_site = smdob.smdob_site and smdoa_ud008=smrta_001
   --smdoa_ud008	業務區別 / smrta_001 業務區別代號
 WHERE
@@ -654,11 +689,23 @@ def build_agent(stream: bool = False):
                  at.saveJSON_tool()]
     if _build_rag_data_sources():
         tool_list.insert(5, documents_rag_tool)
+    sql_error_policy = """
+
+SQL tool error handling policy:
+- SQL tools return JSON with ok=false when execution fails.
+- Explain error_type and message to the user in plain language.
+- Do not guess database, schema, table, or column names.
+- Do not retry an ok=false SQL result unless verified schema or an explicit
+  user correction provides a new query.
+- If the error cannot be resolved, clearly state what could not be completed
+  and what information is needed.
+"""
+
     return akasha.agents(
         tools=tool_list,
         model=cfg["model_name"],
         temperature=cfg["temperature"],
-        system_prompt=cfg.get("system_prompt") or "",
+        system_prompt=(cfg.get("system_prompt") or "") + sql_error_policy,
         language='zh',
         verbose=True,
         keep_logs=True,

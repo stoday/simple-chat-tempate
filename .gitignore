@@ -1,7 +1,7 @@
 .vscode
 .env
 *.db
-Knowledge
+# Knowledge
 chat_uploads
 akasha-package
 backend/rag_files/
