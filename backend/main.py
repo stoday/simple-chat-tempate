@@ -422,7 +422,9 @@ def _fix_missing_upload_links(text: str) -> str:
     if not text:
         return text
     # 改進 Regex：排除引號、反斜線，確保不誤抓 \n 等跳脫字元
+    upload_root_pattern = re.escape(UPLOAD_ROOT.as_posix().rstrip("/"))
     patterns = [
+        rf"{upload_root_pattern}[/\\]+[^\s\"'()\]\\]+",
         r"(?:\.\/)?backend[\/\\]+chat_uploads[\/\\]+[^\s\"'()\]\\]+",
         r"[\/\\]+chat_uploads[\/\\]+[^\s\"'()\]\\]+",
         r"https?:\/\/[^\s\"'()\]\\]+?[\/\\]+chat_uploads[\/\\]+[^\s\"'()\]\\]+",
