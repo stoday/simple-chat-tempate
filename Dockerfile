@@ -9,6 +9,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        unixodbc \
+    && curl -sSL -O https://packages.microsoft.com/config/debian/$(. /etc/os-release && echo ${VERSION_ID%%.*})/packages-microsoft-prod.deb \
+    && dpkg -i packages-microsoft-prod.deb \
+    && rm packages-microsoft-prod.deb \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
+    && apt-get purge -y --auto-remove curl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/backend/requirements.txt
 
