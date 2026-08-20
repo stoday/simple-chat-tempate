@@ -550,6 +550,9 @@ export const useChatStore = defineStore('chat', () => {
             const index = liveBucket?.findIndex((message) => message.id === streamKey) ?? -1
             if (index < 0) return
             liveBucket[index] = applyAgentEvent(liveBucket[index], event)
+            if (event.type === 'conversation_title' && event.payload?.conversation_title) {
+              updateConversationTitle(conversationId, event.payload.conversation_title)
+            }
             if (event.type === 'done' && event.payload?.conversation_title) {
               updateConversationTitle(conversationId, event.payload.conversation_title)
             }

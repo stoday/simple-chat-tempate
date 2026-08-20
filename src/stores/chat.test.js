@@ -64,9 +64,10 @@ describe('chat store agent stream', () => {
       throw new Error(`Unexpected POST ${url}`)
     })
     globalThis.fetch = vi.fn(async () => streamResponse([
-      event(11, 1, 'thinking', { kind: 'stage', text: 'Checking data' }),
-      event(11, 2, 'answer_delta', { delta: 'Streaming reply' }),
-      event(11, 3, 'done', { conversation_title: 'Generated title' })
+      event(11, 1, 'conversation_title', { conversation_title: 'Generated title' }),
+      event(11, 2, 'thinking', { kind: 'stage', text: 'Checking data' }),
+      event(11, 3, 'answer_delta', { delta: 'Streaming reply' }),
+      event(11, 4, 'done', { conversation_title: 'Generated title' })
     ]))
 
     const store = useChatStore()

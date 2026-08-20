@@ -96,8 +96,9 @@ def test_agent_events_stream_with_one_versioned_contract(client: TestClient, mon
     assert streamed.status_code == 200
     assert streamed.headers["content-type"].startswith("text/event-stream")
     events = _parse_sse(streamed.text)
-    assert [event["id"] for event in events] == [1, 2, 3, 4, 5, 6]
+    assert [event["id"] for event in events] == [1, 2, 3, 4, 5, 6, 7]
     assert [event["data"]["type"] for event in events] == [
+        "conversation_title",
         "thinking",
         "tool_call",
         "tool_result",
@@ -107,21 +108,22 @@ def test_agent_events_stream_with_one_versioned_contract(client: TestClient, mon
     ]
     assert all(event["data"]["version"] == 1 for event in events)
     assert all(event["data"]["message_id"] == message_id for event in events)
-    assert events[0]["data"]["payload"] == {
+    assert events[0]["data"]["payload"] == {"conversation_title": "Generated title"}
+    assert events[1]["data"]["payload"] == {
         "kind": "summary",
         "text": "Checking records",
     }
-    assert events[1]["data"]["payload"]["call_id"] == "call-1"
     assert events[2]["data"]["payload"]["call_id"] == "call-1"
+    assert events[3]["data"]["payload"]["call_id"] == "call-1"
     assert "must-not-leak" not in streamed.text
     assert "[REDACTED]" in streamed.text
     result_preview = events[2]["data"]["payload"]["result"]
     assert result_preview["truncated"] is True
     assert result_preview["original_size"] > 16_000
     assert result_preview["content_type"] == "application/json"
-    assert events[3]["data"]["payload"] == {"delta": "Hello "}
-    assert events[4]["data"]["payload"] == {"delta": "world"}
-    assert events[5]["data"]["payload"] == {"conversation_title": "Generated title"}
+    assert events[4]["data"]["payload"] == {"delta": "Hello "}
+    assert events[5]["data"]["payload"] == {"delta": "world"}
+    assert events[6]["data"]["payload"] == {"conversation_title": "Generated title"}
 
     history = client.get(
         "/api/messages",
@@ -132,6 +134,7 @@ def test_agent_events_stream_with_one_versioned_contract(client: TestClient, mon
         item for item in history.json()["messages"] if item["id"] == message_id
     )
     assert [event["type"] for event in assistant["events"]] == [
+        "conversation_title",
         "thinking",
         "tool_call",
         "tool_result",
@@ -146,8 +149,10 @@ def test_agent_events_stream_with_one_versioned_contract(client: TestClient, mon
         headers=auth_header(token),
     )
     replay_events = _parse_sse(replayed.text)
-    assert [event["id"] for event in replay_events] == [5, 6]
-    assert [event["data"]["type"] for event in replay_events] == ["answer_delta", "done"]
+    assert [event["id"] for event in replay_events] == [5, 6, 7]
+    assert [event["data"]["type"] for event in replay_events] == [
+        "answer_delta", "answer_delta", "done"
+    ]
 
 
 def test_stop_is_idempotent_and_replays_one_terminal_event(client: TestClient, monkeypatch):
@@ -250,9 +255,10 @@ def test_agent_failure_preserves_partial_answer_without_leaking_exception(
             raise RuntimeError("provider traceback contains super-secret-value")
 
     monkeypatch.setattr(main, "get_agent", lambda stream=True: FailingAgent())
+    monkeypatch.setattr(main, "_generate_conversation_title", lambda content: "Generated title")
     monkeypatch.setattr(main, "SIMULATED_REPLY_DELAY", 0)
     _, _, _, token = bootstrap_admin_and_user(client)
-    conversation_id = create_conversation(client, token, "Failure")
+    conversation_id = create_conversation(client, token, "New Chat")
     created = client.post(
         "/api/messages",
         data={"content": "Fail safely", "conversation_id": str(conversation_id)},
@@ -270,7 +276,11 @@ def test_agent_failure_preserves_partial_answer_without_leaking_exception(
         headers=auth_header(token),
     )
     events = _parse_sse(replayed.text)
-    assert [event["data"]["type"] for event in events] == ["answer_delta", "error"]
+    assert [event["data"]["type"] for event in events] == [
+        "conversation_title",
+        "answer_delta",
+        "error",
+    ]
     error_payload = events[-1]["data"]["payload"]
     assert error_payload == {
         "code": "assistant_generation_failed",

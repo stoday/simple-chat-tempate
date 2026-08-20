@@ -1,7 +1,7 @@
 {
   "name": "SimpleChat",
   "private": true,
-  "version": "1.3",
+  "version": "1.5",
   "type": "module",
   "scripts": {
     "dev": "vite",

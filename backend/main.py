@@ -736,6 +736,9 @@ def _run_reply_worker(
                         (new_title, conversation_id),
                     )
                     conn.commit()
+                    result_queue.put(
+                        ("event", ("conversation_title", {"conversation_title": new_title}))
+                    )
 
             # 2. 進行正式的回覆生成
             files = [MessageFileResponse(**item) for item in files_payload]
@@ -1094,6 +1097,10 @@ def persist_assistant_files(
     return saved_files
 
 
+HISTORY_ROUND_LIMIT = 10
+HISTORY_MESSAGE_LIMIT = HISTORY_ROUND_LIMIT * 2
+
+
 def build_reply(
     content: str,
     files: List[MessageFileResponse],
@@ -1106,20 +1113,24 @@ def build_reply(
 ) -> Union[str, tuple[str, List[AssistantGeneratedFile]]]:
     """Generate assistant response via LLM."""
     text = content.strip() if content and content.strip() else "(no text provided)"
-    history_rows = db.execute(
+    recent_history_rows = db.execute(
         """
         SELECT id, sender_type, content, status
         FROM message
         WHERE conversation_id = ?
           AND status != 'pending'
-        ORDER BY created_at ASC, id ASC
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
         """,
-        (conversation_id,),
+        (conversation_id, HISTORY_MESSAGE_LIMIT + 1),
     ).fetchall()
+    history_rows = [
+        row
+        for row in reversed(recent_history_rows)
+        if not exclude_message_id or row["id"] != exclude_message_id
+    ][-HISTORY_MESSAGE_LIMIT:]
     history_lines = []
     for row in history_rows:
-        if exclude_message_id and row["id"] == exclude_message_id:
-            continue
         content_text = (row["content"] or "").strip()
         if not content_text:
             continue
