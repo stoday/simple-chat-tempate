@@ -13,6 +13,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        libgssapi-krb5-2 \
         unixodbc \
     && curl -sSL -O https://packages.microsoft.com/config/debian/$(. /etc/os-release && echo ${VERSION_ID%%.*})/packages-microsoft-prod.deb \
     && dpkg -i packages-microsoft-prod.deb \
