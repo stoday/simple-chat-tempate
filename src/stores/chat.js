@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import apiClient from '../services/api'
+import { isJwtExpired } from '../services/authToken'
 import {
   AgentStreamGapError,
   applyAgentEvent,
@@ -390,6 +391,12 @@ export const useChatStore = defineStore('chat', () => {
 
     if (!trimmed && outgoingFiles.length === 0) {
       return
+    }
+
+    if (isJwtExpired(localStorage.getItem('auth_token'))) {
+      const error = new Error('登入已過期，請重新登入後再送出。')
+      error.code = 'AUTH_TOKEN_EXPIRED'
+      throw error
     }
 
     const formData = new FormData()

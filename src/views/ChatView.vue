@@ -21,6 +21,7 @@ const { config } = storeToRefs(appConfigStore)
 const messagesContainer = ref(null)
 const isSidebarCollapsed = ref(false) // false = expanded (default open)
 const chatInputRef = ref(null)
+const CHAT_DRAFT_KEY = 'pending_chat_draft'
 const showEmptyState = computed(() => {
   return !currentMessages.value.length && !isTyping.value && !hasPendingAssistant.value
 })
@@ -38,17 +39,32 @@ watch([currentMessages, isTyping], () => {
 }, { deep: true })
 
 const handleSend = async (payload) => {
+  sessionStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify({ text: payload.text || '' }))
   try {
     await chatStore.sendMessage(payload.text, payload.files)
     chatInputRef.value?.resetInput()
+    sessionStorage.removeItem(CHAT_DRAFT_KEY)
   } catch (error) {
     if (error?.code === 'ERR_CANCELED' || error?.message === 'canceled') {
+      return
+    }
+    if (error?.code === 'AUTH_TOKEN_EXPIRED') {
+      authStore.logout()
       return
     }
     console.error('Failed to send message', error)
     showInPageAlert(error?.response?.data?.detail || error.message || 'Failed to send message.')
   }
 }
+
+onMounted(() => {
+  try {
+    const draft = JSON.parse(sessionStorage.getItem(CHAT_DRAFT_KEY) || 'null')
+    if (draft?.text) chatInputRef.value?.setInput(draft.text)
+  } catch {
+    sessionStorage.removeItem(CHAT_DRAFT_KEY)
+  }
+})
 
 const handleStopGeneration = async () => {
   try {

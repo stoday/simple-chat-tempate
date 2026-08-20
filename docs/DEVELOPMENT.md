@@ -28,7 +28,7 @@ backend/
 └── backend/requirements.txt
 ```
 
-- **認證**：`/api/auth/register`、`/api/auth/login`、`/api/auth/me`。第一位註冊者自動成為 `admin`；之後的新註冊角色依 `config.toml` 的 `roles.default_role`。JWT 以 `SECRET_KEY` 簽署。
+- **認證**：`/api/auth/register`、`/api/auth/login`、`/api/auth/me`。第一位註冊者自動成為 `admin`；之後的新註冊角色依 `config.toml` 的 `roles.default_role`。JWT 以 `SECRET_KEY` 簽署，有效期為 24 小時（設定位置：`backend/main.py` 的 `ACCESS_TOKEN_EXPIRE_MINUTES`）。前端會在送出訊息前檢查 JWT 是否過期；若 API 回傳 401，會導向登入頁。送出失敗的聊天文字會暫存於 `sessionStorage`，重新登入後恢復；瀏覽器不允許自動恢復附件。
 - **對話**：`conversation` 表保存每位使用者的多輪對話列表，API 提供 CRUD 並檢查擁有者／管理員權限。
 - **訊息**：`message` 表與 `message_file` 表記錄每則訊息與附件，並與 `conversation_id` 關聯。
 - **附件儲存**：所有上傳檔案存於 `backend/chat_uploads/user_<id>_<display_name_slug>/原檔名_<8碼>.ext`。`display_name` 會做 sanitize（非英數轉 `_`、前後去除 `_`）；若沒有顯示名稱，則僅 `user_<id>`。靜態路徑由 `app.mount('/chat_uploads', ...)` 提供。

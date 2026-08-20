@@ -174,8 +174,15 @@ const resetInput = async () => {
   resetHeight()
 }
 
+const setInput = async (text) => {
+  prompt.value = text || ''
+  await nextTick()
+  resetHeight()
+}
+
 defineExpose({
-  resetInput
+  resetInput,
+  setInput
 })
 </script>
 
