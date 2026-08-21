@@ -99,6 +99,11 @@ mkdir -p artifacts/text_to_sql
 docker run --rm --network <existing_network> -e BASE_URL=http://simplechat-frontend -e TEST_EMAIL=heranchat-e2e@example.com -e TEST_PASSWORD=test-only-password -e RESULTS_DIR=/results -v "$(pwd)/artifacts/text_to_sql:/results" heranchat-text-to-sql-e2e --case 01
 ~~~
 
+```bash
+mkdir -p artifacts/text_to_sql
+docker run --rm --network simple-chat-tempate_default -e BASE_URL=http://heranchat.demo-today.org -e TEST_EMAIL=admin@demo.heran -e TEST_PASSWORD=password123 -e RESULTS_DIR=/results -v "$(pwd)/artifacts/text_to_sql:/results" heranchat-text-to-sql-e2e --case 01
+```
+
 請將 existing_network 替換成實際 network，例如：
 
 ~~~bash

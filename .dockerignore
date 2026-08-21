@@ -16,7 +16,6 @@ backend/simplechat.db-shm
 backend/simplechat.db-wal
 backend/chat_uploads
 backend/rag_files
-backend/Knowledge
 
 .env
 .env.*
