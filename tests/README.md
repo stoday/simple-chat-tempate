@@ -300,3 +300,95 @@ runner 會建立測試 user、conversation、user message、assistant message �
 - 確認測試資料不影響正式報表。
 - 定期清理舊測試 conversation。
 - 保存 JSON 結果與執行時間。
+
+
+## 十二、自動化整個流程
+
+本專案提供 scripts/remote_text_to_sql.ps1，可自動執行：
+
+1. 檢查 git、ssh、scp。
+2. 只 stage 指定的 knowledge、測試工具、案例文件與 automation script。
+3. commit 並在指定 -Push 時執行 git push。
+4. SSH 到遠端執行 git pull --ff-only。
+5. 執行 docker compose build 與 docker compose up -d。
+6. 建立 Text-to-SQL 測試 image。
+7. 將 runner 加入指定 Docker network。
+8. 執行指定案例或全部案例。
+9. 用 SCP 將最新 JSON artifact 拉回本機。
+
+### 遠端建立測試 env file
+
+請在遠端主機建立只供測試使用的 env file：
+
+~~~bash
+cd /path/to/HERANCHAT
+umask 077
+cat > .env.text-to-sql-e2e <<'EOF'
+TEST_EMAIL=heranchat-e2e@example.com
+TEST_PASSWORD=test-only-password
+TEST_DISPLAY_NAME=Text-to-SQL E2E
+EOF
+~~~
+
+這個檔案不要 commit，也不要放入 GitHub。它只留在遠端主機，並由 docker run 的 env-file 讀取。
+
+### 自動執行全部流程
+
+在本機專案根目錄執行：
+
+~~~powershell
+.\scripts\remote_text_to_sql.ps1 -RemoteHost user@remote-host -RemoteProjectPath /opt/HERANCHAT -RemoteNetwork simple-chat-tempate_default -BaseUrl http://heranchat.demo-today.org -RemoteEnvFile /opt/HERANCHAT/.env.text-to-sql-e2e -Push
+~~~
+
+如果 runner 應該經由 frontend container 內部 DNS 呼叫：
+
+~~~powershell
+.\scripts\remote_text_to_sql.ps1 -RemoteHost user@remote-host -RemoteProjectPath /opt/HERANCHAT -RemoteNetwork simple-chat-tempate_default -BaseUrl http://simplechat-frontend -RemoteEnvFile /opt/HERANCHAT/.env.text-to-sql-e2e -Push
+~~~
+
+### 參數說明
+
+| 參數 | 說明 |
+|---|---|
+| RemoteHost | SSH 目標，例如 user@remote-host |
+| RemoteProjectPath | 遠端 checkout 絕對路徑 |
+| RemoteNetwork | frontend/backend 共用的 Docker network |
+| BaseUrl | runner 要呼叫的 frontend URL |
+| RemoteEnvFile | 遠端測試 env file 路徑 |
+| Push | 明確允許本機 commit 並 git push |
+| CaseId | 可重複指定，例如 -CaseId 01 -CaseId 07 |
+| NoCache | 測試 image 使用 docker build --no-cache |
+| SkipDeploy | 不執行遠端 Compose rebuild/up |
+| SkipTest | 只更新部署，不執行 E2E runner |
+
+### 只測指定案例
+
+~~~powershell
+.\scripts\remote_text_to_sql.ps1 -RemoteHost user@remote-host -RemoteProjectPath /opt/HERANCHAT -RemoteNetwork simple-chat-tempate_default -BaseUrl http://heranchat.demo-today.org -RemoteEnvFile /opt/HERANCHAT/.env.text-to-sql-e2e -CaseId 01 -CaseId 07 -Push
+~~~
+
+### 強制重建測試 image
+
+加入：
+
+~~~powershell
+-NoCache
+~~~
+
+### 只執行遠端測試，不重新部署
+
+適合 frontend/backend 已是正確版本，只想重跑測試：
+
+~~~powershell
+.\scripts\remote_text_to_sql.ps1 -RemoteHost user@remote-host -RemoteProjectPath /opt/HERANCHAT -RemoteNetwork simple-chat-tempate_default -BaseUrl http://heranchat.demo-today.org -RemoteEnvFile /opt/HERANCHAT/.env.text-to-sql-e2e -SkipDeploy -CaseId 01
+~~~
+
+### 安全注意事項
+
+- 不加 -Push 時，script 不會執行 git push。
+- script 只會 stage 預先列出的路徑，不會把整個 worktree 全部加入 commit。
+- 測試密碼不寫入 script，也不會傳到 GitHub。
+- 遠端 env file 必須由使用者自行建立。
+- 執行前請確認 git status，避免把其他修改混入 commit。
+- 遠端測試失敗時，script 仍會嘗試拉回已產生的 JSON artifact。
+- 本機必須已設定 SSH key，且能使用 ssh 與 scp 連線遠端主機。
