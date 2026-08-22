@@ -333,3 +333,10 @@ pytest tests -v
 ## 📄 授權
 
 此專案可自由修改與使用。
+
+
+## 測試
+
+```
+docker run --rm --network simple-chat-tempate_default -e BASE_URL=http://heranchat.demo-today.org -e TEST_EMAIL=admin@demo.heran -e TEST_PASSWORD=password123 -e RESULTS_DIR=/results -v "$(pwd)/artifacts/text_to_sql:/results" heranchat-text-to-sql-e2e
+```
