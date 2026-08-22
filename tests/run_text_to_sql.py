@@ -26,16 +26,25 @@ def sse(raw):
   if d: out.append(json.loads("\n".join(d)))
  return out
 def sqls(events):
- out=[]
+ tool_sql=[]
+ answer_parts=[]
  for e in events:
-  p=e.get("payload") or {}; a=p.get("arguments") or {}
-  if e.get("type")=="tool_call" and p.get("name")=="execute_sql_query" and isinstance(a,dict) and a.get("query"): out.append(str(a["query"]))
- return out
+  p=e.get("payload") or {}
+  event_type=e.get("type")
+  if event_type=="tool_call":
+   a=p.get("arguments") or p.get("args") or {}
+   if p.get("name")=="execute_sql_query" and isinstance(a,dict) and a.get("query"):
+    tool_sql.append(str(a["query"]).strip())
+  elif event_type=="answer_delta":
+   delta=p.get("delta")
+   if isinstance(delta,str): answer_parts.append(delta)
+ if tool_sql: return tool_sql
+ return [x.strip() for x in SQL_RE.findall("".join(answer_parts)) if x.strip()]
 def run(c,case,token,timeout):
  h={"Authorization":"Bearer "+token}; r=c.post("/api/conversations",json={"title":"Text-to-SQL E2E "+case["case_id"]},headers=h); r.raise_for_status(); cid=r.json()["id"]
  r=c.post("/api/messages",data={"content":case["question"],"conversation_id":str(cid)},headers=h); r.raise_for_status(); mid=r.json()["reply"]["id"]
  r=c.get("/api/messages/"+str(mid)+"/stream",params={"after_sequence":0},headers={**h,"Accept":"text/event-stream"},timeout=timeout); raw=r.text; r.raise_for_status(); ev=sse(raw); actual=sqls(ev); exp=[norm(x) for x in case["expected_sql"]]; got=[norm(x) for x in actual]
- return {"case_id":case["case_id"],"question":case["question"],"conversation_id":cid,"message_id":mid,"expected_sql":case["expected_sql"],"actual_sql":actual,"expected_sql_normalised":exp,"actual_sql_normalised":got,"sql_count_match":len(exp)==len(got),"exact_sql_match":exp==got,"event_types":[x.get("type") for x in ev],"sequences":[x.get("sequence") for x in ev],"terminal_event":ev[-1].get("type") if ev else None,"raw_sse":raw,"events":ev}
+ return {"case_id":case["case_id"],"question":case["question"],"conversation_id":cid,"message_id":mid,"expected_sql":case["expected_sql"],"actual_sql":actual,"expected_sql_normalised":exp,"actual_sql_normalised":got,"sql_count_match":len(exp)==len(got),"exact_sql_match":exp==got,"event_types":[x.get("type") for x in ev],"sequences":[x.get("sequence") for x in ev],"terminal_event":ev[-1].get("type") if ev else None,"events":ev}
 def main():
  p=argparse.ArgumentParser(); p.add_argument("--cases",type=Path,default=Path("/runner/text_to_sql_qa_test_cases.md")); p.add_argument("--base-url",default=os.getenv("BASE_URL","http://simplechat-frontend")); p.add_argument("--email",default=os.getenv("TEST_EMAIL")); p.add_argument("--password",default=os.getenv("TEST_PASSWORD")); p.add_argument("--display-name",default=os.getenv("TEST_DISPLAY_NAME","Text-to-SQL E2E")); p.add_argument("--output-dir",type=Path,default=Path(os.getenv("RESULTS_DIR","/results"))); p.add_argument("--case",action="append",dest="ids"); p.add_argument("--timeout",type=float,default=300); a=p.parse_args()
  if not a.email or not a.password: p.error("set TEST_EMAIL and TEST_PASSWORD")

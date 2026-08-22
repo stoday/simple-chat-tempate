@@ -337,6 +337,33 @@ pytest tests -v
 
 ## 測試
 
+登入遠端主機，目錄位置
+
+```
+/root/Projects/HeranChat/simple-chat-tempate
+```
+
+在 git pull origin main 之後
+
+```
+docker compose build 
+docker compose up -d
+```
+
+輸入指令進行測試
+
 ```
 docker run --rm --network simple-chat-tempate_default -e BASE_URL=http://heranchat.demo-today.org -e TEST_EMAIL=admin@demo.heran -e TEST_PASSWORD=password123 -e RESULTS_DIR=/results -v "$(pwd)/artifacts/text_to_sql:/results" heranchat-text-to-sql-e2e
 ```
+
+或
+
+```
+docker build -f tests/Dockerfile -t heranchat-text-to-sql-test .
+docker run --rm \
+  --network simple-chat-tempate_default \
+  -v "$PWD/tests:/app/tests" \
+  heranchat-text-to-sql-test
+```
+
+
