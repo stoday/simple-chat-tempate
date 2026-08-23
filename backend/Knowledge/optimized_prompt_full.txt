@@ -1,52 +1,26 @@
-[Dialect]
-SQL Dialect: Microsoft SQL Server (T-SQL). 請務必使用 T-SQL 語法：
-- 取前 N 筆請用 TOP N（避免 LIMIT）。
-- 日期運算可用 DATEADD/DATEDIFF。
-- 允許使用 ISNULL/CAST/CONVERT；聚合與 JOIN 依照 T-SQL。
-- 請避免 MySQL 專屬語法（如 LIMIT、IFNULL、反引號）。
+[DIALECT AND VERIFIED BUSINESS KNOWLEDGE]
 
-[Database Object Naming]
-- The SQL Server database is HERAN and the default schema is dbo.
-- Use three-part names for sales tables: [HERAN].[dbo].[table_name].
-- Correct examples: [HERAN].[dbo].[smdob], [HERAN].[dbo].[smdoa], [HERAN].[dbo].[smrta].
-- Never use two-part names such as HERAN.smdob; HERAN is the database, not the schema.
-- Do not treat the enterprise value in *_ent columns as a database or schema name.
-
-[Rules]
-常用條件與欄位意義：
-- 單據狀態：smdoa_stus='S' / smdob_stus='S' / smsrb_stus='S' 代表單據已過帳。過帳的資料才是作為有銷售出去的單據。
-- 產品類型：smdob_014，1=一般產品，2=贈品；查詢一般品常加 smdob_014='1'。一般品也是指一般銷售的品項。
-- 庫別排除：smdob_loc<>'AU' / smsrb_loc<>'AU' 表示排除辦公倉庫。一般銷售的計算也需要排除來自辦公倉庫的品項。
-- 過帳日欄位：smdoa_pstdt / smdob_pstdt 用於時間範圍篩選。
-- 日期欄位格式：smdoa_pstdt 是 datetime（例如 2023-05-22 00:00:00）。若欄位不是 datetime（例如 nvarchar），避免直接用 FORMAT；請先 TRY_CONVERT(date, 欄位) 或 CONVERT(datetime, 欄位) 再做年月分組/排序。
-- 年月分組建議（datetime 欄位）：使用 CONVERT(varchar(7), smdoa_pstdt, 120) 或 DATEFROMPARTS(YEAR(smdoa_pstdt), MONTH(smdoa_pstdt), 1)。
-- 年月分組建議（字串日期）：使用 CONVERT(varchar(7), TRY_CONVERT(date, smdoa_pstdt), 120) 或 DATEFROMPARTS(YEAR(TRY_CONVERT(date, smdoa_pstdt)), MONTH(TRY_CONVERT(date, smdoa_pstdt)), 1)。
-- 產品別：wmmta_ud012 代碼 R/A/F/W/O（液晶/冷氣/冰箱/洗衣機/其他家電）。
-- 單價/金額：smdob_005 為金額，需配合 smdob_qty；避免 smdob_qty 為 NULL 或 0；可用 CAST(CAST(smdob_005 AS FLOAT) / smdob_qty AS FLOAT) 取得單價。
-- smsra_rmk此欄位為退貨備註，可以利用此欄位過濾退貨單據，或是找有問題的產品。
-- 判斷產品「熱銷/賣得好不好/賣的有多少」的依據是被客人**訂購的次數**，請以訂單總數（單據數）為標準來排序，而不是依據售出的商品總量。
-[Query Intent and SQL Construction Rules]
-在產生 SQL 前，先辨識使用者要計算的是「單據次數、退貨數量、銷售金額」還是「單價差異」，不可自行替換指標：
-- 「熱銷、最熱門、訂購次數」：以銷售單據數計算，使用 COUNT(DISTINCT smdob_docno)，不是 SUM(smdob_qty)。若 JOIN wmmta 取得品名，仍必須以產品品號與品名一起分組，避免不同品號同名被合併。若使用者要列出熱門產品清單，使用 TOP 10；若只問最高的一款或第一名，才使用 TOP 1。
-- 「退貨次數」：使用 COUNT(DISTINCT smsrb_docno)，以 smsrb_itemno、smsrb_001 分組；必須加 smsrb_stus='S' 與 smsrb_loc<>'AU'。
-- 「退貨數量、退貨量、問題最少」：使用 SUM(smsrb_qty)，不是 COUNT(smsrb_docno)；同樣必須加 smsrb_stus='S' 與 smsrb_loc<>'AU'，並依總數量排序。若題目只說產品問題，且沒有其他定義，優先使用退貨備註 smsra_rmk 或明確說明採用退貨數量，不能把問題次數默默改成退貨筆數。
-- 「主收入來源、銷售額、銷售金額」：使用 SUM(smdob.smdob_005)（銷售明細金額），不要改用 smdoa.smdoa_035；產品分類使用 wmmta.wmmta_ud012，並以 wmmta_ent、wmmta_site、wmmta_itemno 完整連接。必須排除 NULL 或空白分類：WHERE ISNULL(wmmta.wmmta_ud012, '') <> ''.
-- 「售價差異、價格差異」：使用 smdob_005 / smdob_qty 計算單價，先排除 smdob_qty IS NULL 或 0；smdob_004 是原幣單價，只有使用者明確要求原幣單價時才直接使用。
-- 「業務表現最好」若規則或題目以銷售金額衡量：使用 SUM(smdob.smdob_005)，業務姓名固定使用 smrta.smrta_002，透過 smdoa.smdoa_ud008 = smrta.smrta_001 連接，並加入 smrta_stus='Y' 與 smrta_002 <> ''; 不可改用 smdoa_epoe、smrta_003 或訂單數，除非使用者明確要求訂單數或業務全名。
-
-Join 與篩選的硬性規則：
-- 所有業務資料表必須使用 [HERAN].[dbo] 三段式名稱；禁止使用 [HIS].[dbo]、[HERAN] 或其他未經本知識庫確認的資料庫／schema。smdoa 與 smdob 必須同時使用 smdoa_ent=smdob_ent、smdoa_site=smdob_site、smdoa_docno=smdob_docno；smsra 與 smsrb 必須同時使用 smsra_ent=smsrb_ent、smsra_site=smsrb_site、smsra_docno=smsrb_docno。不可只用 docno 或 itemno 連接。
-- 銷售查詢通常必須包含 smdoa_stus='S'、smdob_014='1'、smdob_loc<>'AU'；退貨查詢通常必須包含 smsrb_stus='S'、smsrb_loc<>'AU'。若省略，必須由使用者明確要求。
-- 日期範圍若欄位含時間，使用半開區間：起日 >= start 且 < 結束日的下一天；不要用 <= 結束日而漏掉當天非午夜資料。
-- 「銷售額下降最多」：先分別計算 AprilSales 與 MaySales，再使用 AprilSales - MaySales 作為下降額；只保留 AprilSales > MaySales 的產品，並以下降額 DESC 排序。不可用 MaySales - AprilSales 後只排序而不排除上升產品。
-- 任何表名、欄位名、聚合指標或 join key 不確定時，回到本知識庫確認；不可用看似合理的名稱猜測，也不可因 SQL 執行失敗就改變問題的業務指標。
-
-產生 SQL 後執行前自我檢查：
-1. SELECT 的指標是否與問題相同（COUNT DISTINCT、SUM 數量、SUM 金額、單價差異不可互換）。
-2. GROUP BY 的粒度是否是產品編號、產品名稱、分類或業務代號所要求的粒度。
-3. TOP N、日期範圍、狀態、產品類型、庫別等條件是否完整。
-4. 所有 JOIN 是否包含 ent、site 與 docno 等完整鍵，且所有表名都是 [HERAN].[dbo] 三段式名稱。
-- SQL 輸出只能使用純文字 SQL；不要輸出 HTML 標籤（例如 <sup>、<br>）或把 HTML 插入欄位別名。
+- Use Microsoft SQL Server T-SQL. Use TOP, DATEADD/DATEDIFF, ISNULL, CAST, and
+  CONVERT; do not use MySQL-only syntax such as LIMIT, IFNULL, or backticks.
+- Sales tables use [HERAN].[dbo].[table]. Never use two-part names or treat *_ent
+  values as database/schema names.
+- Posted documents use status S. Normal sales usually require smdoa_stus='S',
+  smdob_014='1', and smdob_loc<>'AU'. Returns usually require smsrb_stus='S' and
+  smsrb_loc<>'AU'; omit a default only when the user explicitly asks.
+- Use smdoa_pstdt/smdob_pstdt for sales dates. For datetime ranges use
+  column >= start AND column < end. Convert string dates before date grouping.
+- Metric meanings: sales/order frequency = COUNT(DISTINCT smdob_docno);
+  return count = COUNT(DISTINCT smsrb_docno); return quantity = SUM(smsrb_qty);
+  sales amount = SUM(smdob.smdob_005); unit-price variation = smdob_005/smdob_qty
+  after excluding NULL or zero quantities.
+- Product category is wmmta_ud012. Join wmmta using enterprise, site, and itemno.
+  Salespeople use smrta.smrta_001 as the key and smrta.smrta_002 as the display name,
+  joined from smdoa.smdoa_ud008; valid salesperson rows normally have smrta_stus='Y'
+  and a nonblank name.
+- Key examples: smdoa-smdob use ent/site/docno; smsra-smsrb use ent/site/docno;
+  wmmta uses ent/site/itemno; smrta uses ent/site plus the salesperson code.
+- If a name, field, metric, or join key is uncertain, consult this Schema. Never guess.
+- Return plain-text SQL only; do not put HTML tags in SQL or aliases.
 
 [Schema]
 # Database Schema Prompt (Compact)
@@ -943,3 +917,29 @@ Description: 銷退明細檔
 - smsrb_modid: 資料修改者 [nvarchar(20)]
 - smsrb_moddt: 資料修改日 [datetime]
 - smsrb_crtid: 資料建立者 [nvarchar(20)]
+[FINAL SQL WORKFLOW]
+
+Before executing, make this short plan:
+
+[SQL_PLAN]
+intent | metric | entity_key | base_table | joins | filters | date_range |
+group_by | having | order_by | top | null_policy
+[/SQL_PLAN]
+
+Apply these rules to every request:
+
+1. Preserve the user's dates, filters, metric, comparison periods, and TOP value.
+   Never replace explicit dates with GETDATE() or an inferred period.
+2. Group, count, rank, and aggregate by a stable entity key. A name is display-only;
+   never group by a name alone when an identifier exists.
+3. Every JOIN needs a purpose and all verified compound keys. Use LEFT JOIN for a
+   descriptive/master table unless matching rows are required by the question.
+4. The GROUP BY grain must match the requested entity; every selected non-aggregate
+   expression must be grouped or summarized.
+5. SELECT, HAVING, ORDER BY, and TOP must use the same metric. Comparisons/differences
+   require enough valid observations before ranking or calculating.
+6. Use explicit half-open ranges: date_column >= start AND date_column < end.
+7. Handle NULL and blank dimensions explicitly; never silently map them to "其他".
+8. Use only verified T-SQL tables and columns. If execution fails, inspect the error,
+   repair the SQL without changing the user's metric, and execute it again. Answer
+   only after a successful result; never fabricate a result.
