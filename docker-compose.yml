@@ -12,6 +12,7 @@ services:
       RAG_UPLOAD_ROOT: /app/data/rag_files
     volumes:
       - simplechat_data:/app/data
+      - ./backend/Knowledge/optimized_prompt_full.txt:/app/backend/Knowledge/optimized_prompt_full.txt:rw
     expose:
       - "8000"
     restart: unless-stopped
