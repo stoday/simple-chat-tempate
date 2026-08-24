@@ -16,6 +16,7 @@ import rich
 import traceback
 from .database import get_connection, load_llm_config
 from .rag_library import get_searchable_rag_sources
+from .sql_workflow import run_sql_workflow
 
 
 def _fetch_rag_summaries():
@@ -362,44 +363,9 @@ def revising_prompt_tool(prompt):
   return revised_prompt
 
 
-# 定義一個最後詳細檢查使用者需求與產生的相對應 sql 指令，是否符合規則的工具
-def check_rules():
-    # 定義一個最後詳細檢查使用者需求與產生的相對應 sql 指令，是否符合規則的工具
-    sale_rules = '''
-    # SQL Server object naming:
-    - The database is HERAN and the default schema is dbo.
-    - Always use three-part names for these sales tables: [HERAN].[dbo].[smdob], [HERAN].[dbo].[smdoa], and [HERAN].[dbo].[smrta].
-    - Never use HERAN.smdob or other two-part names; HERAN is the database, not the schema.
-    - Never treat values in *_ent columns as database or schema names.
-
-    # 銷售與出貨：
-    - 計算銷售量時，就要統計 smdob_docno (單據號碼) 出現的次數，而非使用 smdob_qty (數量) 欄位，也不是 smdob_itemno (產品編號) 欄位。
-    - 銷售的出貨日期請以 smdoa 表單的 smdoa_pstdt (資料過帳日) 為準。而非使用 smdoa_docdt (單據日期)，也不是 smdob_007 (預計出貨日期)。
-    - 當查詢銷售產品數量時，請使用 smdob_014 (產品類型) 欄位來過濾，僅包含 '1' (一般) 的產品類型，排除 '2' (贈品)，同時 smdob_loc (庫別) 欄位不等於 'AU' 也就是不會放置在「辦公倉」的部分。然後 smdoa_stus (單據狀態) 欄位必須等於 'S' (過帳)。
-    - 有關業務人員的部分，要從 smrta 表單來做查詢。使用 smrta.smrta_002 欄位作為業務的姓名查找，smdob.smdob_005 作為總銷售金額的欄位，不要找 smdoa_epoe 這個欄位。例如說，如果要找 2025 年銷售最好的業務人員，可以如以下的 SQL 指令:
-    ```sql
-    SELECT TOP 5
-  min(smrta.smrta_002) AS 業務姓名, --smrta_002	業務簡稱
-  SUM(smdob.smdob_005) AS 總銷售金額
- FROM [HERAN].[dbo].[smdob]
- JOIN [HERAN].[dbo].[smdoa]
-  ON smdoa_ent = smdob_ent and smdoa_site = smdob_site and smdob.smdob_docno = smdoa.smdoa_docno
- JOIN [HERAN].[dbo].[smrta]
-  ON smrta.smrta_ent = smdob.smdob_ent AND smrta.smrta_site = smdob.smdob_site and smdoa_ud008=smrta_001
-  --smdoa_ud008	業務區別 / smrta_001 業務區別代號
-WHERE
-  YEAR(smdoa.smdoa_pstdt) = 2025 and smdoa_stus='S' and smdob_014='1' and smdob_loc<>'AU'
--- smdoa_stus='S' 單據狀態為'過帳' / smdoa_pstdt 資料過帳日 / smdob_014 產品類型　"1.一般　2.贈品" / smdob_loc庫別<>AU辦公倉
-  and smrta_stus='Y' AND smrta.smrta_002 <> ''
-  --smrta_stus	狀態碼
-GROUP BY
-  smrta.smrta_001 --smrta_001 業務區別代號
-ORDER BY
-  總銷售金額 DESC;
-
-    '''
-    
-    return sale_rules
+# 讓規則工具與 Schema 工具共用同一份 Knowledge，避免兩套規則來源漂移。
+def check_rules() -> str:
+    return get_db_table_content()
 
 
 # 創建工具
@@ -409,6 +375,142 @@ check_rules_tool = akasha.create_tool(
     這個工具會回傳需要查詢的規則。沒有需要輸入的參數。
     """,
     func=check_rules
+)
+
+
+def _call_sql_stage_agent(agent, prompt: str) -> str:
+    result = agent(question=prompt)
+    if isinstance(result, str):
+        return result
+    if hasattr(result, "__iter__"):
+        parts = []
+        for chunk in result:
+            if isinstance(chunk, str):
+                parts.append(chunk)
+            elif isinstance(chunk, dict):
+                data = chunk.get("data")
+                if isinstance(data, str):
+                    parts.append(data)
+                elif isinstance(data, dict) and isinstance(data.get("text"), str):
+                    parts.append(data["text"])
+        return "".join(parts)
+    return str(result)
+
+
+def _build_sql_stage_agent(cfg: dict, system_prompt: str):
+    return akasha.agents(
+        tools=[],
+        model=cfg["model_name"],
+        temperature=cfg["temperature"],
+        system_prompt=system_prompt,
+        language="zh",
+        max_input_tokens=cfg["max_input_tokens"],
+        max_output_tokens=cfg["max_output_tokens"],
+        max_round=1,
+        stream=False,
+        verbose=False,
+        keep_logs=False,
+    )
+
+
+def database_query_function(question: str) -> str:
+    """Run a database question through the staged SQL workflow."""
+    db = get_connection()
+    try:
+        cfg = load_llm_config(db)
+    finally:
+        db.close()
+
+    knowledge = get_db_table_content()
+    plan_agent = _build_sql_stage_agent(
+        cfg,
+        """
+You are the Query Plan stage for a SQL Server database assistant.
+Return JSON only. Do not generate SQL and do not call tools.
+The JSON must contain intent, metric, entity_key, display_fields, base_table,
+joins, filters, date_range, group_by, having, order_by, top, and null_policy.
+Preserve every explicit date, metric, filter, comparison period, and limit.
+Use stable identifiers for entity_key; names are display fields only.
+""",
+    )
+    sql_agent = _build_sql_stage_agent(
+        cfg,
+        """
+You are the SQL generation stage for a SQL Server database assistant.
+Return SQL Server T-SQL only. Do not return Markdown or an explanation.
+The supplied Query Plan is already validated. Do not change its metric, dates,
+filters, entity key, grouping, join keys, ordering, or limit.
+Use the verified three-part table form [HERAN].[dbo].[table] for every table.
+Use LEFT JOIN for descriptive wmmta and never use LIMIT; use TOP only when the
+validated Query Plan contains a numeric top value.
+""",
+    )
+    repair_agent = _build_sql_stage_agent(
+        cfg,
+        """
+You are the SQL repair stage for a SQL Server database assistant.
+Return SQL Server T-SQL only. Repair only the listed validation or execution
+errors. Preserve the Query Plan, user metric, explicit dates, filters, entity
+key, grouping, ordering, and limit.
+Use verified three-part table names [HERAN].[dbo].[table], use LEFT JOIN for
+descriptive wmmta, and use TOP rather than LIMIT when a row limit is required.
+""",
+    )
+
+    def make_plan_prompt(user_question: str, source: str) -> str:
+        return f"Knowledge:\n{source}\n\nUser question:\n{user_question}"
+
+    def make_sql_prompt(user_question: str, plan: dict, source: str) -> str:
+        return f"Knowledge:\n{source}\n\nValidated Query Plan:\n{json.dumps(plan, ensure_ascii=False, indent=2)}\n\nUser question:\n{user_question}"
+
+    def make_repair_prompt(sql: str, plan: dict, issues: list[str], source: str) -> str:
+        return f"Knowledge:\n{source}\n\nValidated Query Plan:\n{json.dumps(plan, ensure_ascii=False, indent=2)}\n\nSQL candidate:\n{sql}\n\nErrors to repair:\n- " + "\n- ".join(issues)
+
+    try:
+        result = run_sql_workflow(
+            question,
+            knowledge=knowledge,
+            plan_agent=lambda q, source: _call_sql_stage_agent(
+                plan_agent, make_plan_prompt(q, source)
+            ),
+            sql_agent=lambda q, plan, source: _call_sql_stage_agent(
+                sql_agent, make_sql_prompt(q, plan, source)
+            ),
+            repair_agent=lambda sql, plan, issues, source: _call_sql_stage_agent(
+                repair_agent, make_repair_prompt(sql, plan, issues, source)
+            ),
+            execute_sql=execute_sql_query,
+        )
+    except Exception as exc:
+        return json.dumps(
+            {
+                "ok": False,
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+            },
+            ensure_ascii=False,
+        )
+
+    return json.dumps(
+        {
+            "ok": True,
+            "plan": result.plan,
+            "sql": result.sql,
+            "repair_attempts": result.repair_attempts,
+            **dict(result.execution),
+        },
+        ensure_ascii=False,
+    )
+
+
+database_query_tool = akasha.create_tool(
+    tool_name="database_query_workflow_tool",
+    tool_description=(
+        "執行資料庫問題的分階段 SQL workflow。輸入自然語言資料庫問題；"
+        "工具會先建立並驗證 Query Plan，再生成、驗證、必要時修復並執行 SQL。"
+        "只在問題需要 HERAN SQL Server 即時資料時使用。"
+    ),
+    func=database_query_function,
 )
 
 import ast
@@ -691,32 +793,18 @@ def build_agent(stream: bool = False):
         
     documents_rag_tool = build_documents_rag_tool()
     tool_list = [today_tool,
-                 table_db_content_tool,
-                 sql_query_tool,
-                 check_rules_tool,
+                 database_query_tool,
                  exec_python_tool,
                  google_search_tool,
                  upload_file_qa_tool,
                  at.saveJSON_tool()]
     if _build_rag_data_sources():
         tool_list.insert(5, documents_rag_tool)
-    sql_error_policy = """
-
-SQL tool error handling policy:
-- SQL tools return JSON with ok=false when execution fails.
-- Explain error_type and message to the user in plain language.
-- Do not guess database, schema, table, or column names.
-- Do not retry an ok=false SQL result unless verified schema or an explicit
-  user correction provides a new query.
-- If the error cannot be resolved, clearly state what could not be completed
-  and what information is needed.
-"""
-
     return akasha.agents(
         tools=tool_list,
         model=cfg["model_name"],
         temperature=cfg["temperature"],
-        system_prompt=(cfg.get("system_prompt") or "") + sql_error_policy,
+        system_prompt=cfg.get("system_prompt") or "",
         language='zh',
         verbose=True,
         keep_logs=True,

@@ -1192,7 +1192,6 @@ def build_reply(
 - 當前使用者：id={owner_user_id}, name={display_name}, role={role}
 - 對話上傳目錄：{user_upload_dir} (若執行 Python 產生的檔案，PDF、Word、圖片等請放在此目錄。程式檔或是指令檔請勿放在此目錄)
 - 如果回答問題的中間有使用到 Python 程式碼或是 SQL 指令，請將 Python 程式碼或 SQL 指令直接至於回覆的最下方，說明回答問題的時候有使用到這些程式或指令，方便使用者了解或除錯。Python 程式碼顯示時請用 ```python ... ``` 包起來，SQL 指令則請用 ```sql ... ``` 包起來，以便系統進行語法高亮顯示。
-- **重要 SQL 指令規範**：SQL Server 的 database 是 `HERAN`，預設 schema 是 `dbo`。在執行任何 SQL 查詢前，**禁止自行猜測資料表名稱**（例如 products, sales）。你「必須」先呼叫 `check_rules_tool` 閱讀業務規則，並呼叫 `get_db_table_content` 取得實際的資料表與欄位名稱。銷售資料表必須使用三段式名稱，例如 `[HERAN].[dbo].[smdob]`、`[HERAN].[dbo].[smdoa]`、`[HERAN].[dbo].[smrta]`。禁止使用 `HERAN.smdob` 這種兩段式名稱；`HERAN` 是 database，不是 schema。也不可將 `*_ent` 欄位的企業值當成 database 或 schema 名稱。若未確認 Schema 就執行 SQL 導致錯誤，將被視為任務失敗。
 
 # 上傳檔案資訊 (可用於 upload_file_qa_tool)
 {files_block}

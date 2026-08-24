@@ -943,3 +943,46 @@ Apply these rules to every request:
 8. Use only verified T-SQL tables and columns. If execution fails, inspect the error,
    repair the SQL without changing the user's metric, and execute it again. Answer
    only after a successful result; never fabricate a result.
+
+[GENERAL PLAN CONTRACT]
+
+The Query Plan is mandatory for every database question, including questions with
+no date restriction. Always output date_range as an object with column, start, and
+end. When the user gives no date, use null for all three values and do not invent a
+date filter or a dynamic date. When the user gives dates, preserve them exactly and
+use a half-open range.
+
+Represent every join with table, join_type, and keys. The keys list must contain
+short key names such as ent, site, docno, itemno, or code; it must not omit any
+part of a compound business key. A descriptive master table such as wmmta must be
+LEFT JOINed and fully qualified as [HERAN].[dbo].[wmmta]. Do not change a
+descriptive join to INNER JOIN merely to obtain a label.
+
+When a question compares two or more periods, use the same stable entity key and
+metric in every period. Use explicit half-open date ranges for each period, then
+compare the period aggregates with conditional aggregation or separate CTEs. Do
+not use FORMAT, YEAR, or a display label as a substitute for the date filter. Keep
+only entities with the required observations and apply the requested difference
+condition before ranking.
+
+A stable code identifies an entity; a transaction snapshot name or a master-table
+name is display-only. It is valid to display either verified name when they describe
+the same entity, but never group, count, rank, or compare by the name alone. For
+dimension rankings, retain the dimension's valid-status and nonblank-name policy
+when the schema provides one. For salesperson dimensions, join the document
+business code to the salesperson master business code with all applicable
+enterprise/site keys, and exclude inactive or blank salesperson records.
+
+Add a JOIN only when it is needed for a selected field, filter, metric, or required
+business condition. Do not join a descriptive master merely because it has a name
+column when the base transaction table already supplies the display name. Every
+unnecessary JOIN can duplicate or remove rows and must be omitted.
+
+For transaction-line entities, the line table's verified ``*_001`` snapshot name
+is already a valid display label: use ``smdob_001`` for sales lines and
+``smsrb_001`` for return lines when the question only asks for product code and
+name. Do not add wmmta just to obtain a product name. Join wmmta only when the
+question needs a master-only attribute such as category or another field absent
+from the transaction line.
+
+Use TOP only when the user asks for a row limit, and never use LIMIT in SQL Server.

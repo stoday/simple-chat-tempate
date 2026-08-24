@@ -103,6 +103,7 @@ def translate_agent_event(raw_event: Any, seen_tool_calls: set[str]) -> Iterable
                 "name": name,
                 "status": "started",
                 "arguments": bounded_preview(tool_data.get("args") or {}),
+                "result": bounded_preview(tool_data.get("content")),
             }
         yield "tool_result", {
             "call_id": call_id,
