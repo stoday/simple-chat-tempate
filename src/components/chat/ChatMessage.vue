@@ -131,6 +131,32 @@ const formatExecutionValue = (value) => {
   }
 }
 
+const workflowStageLabels = {
+  planning: '分析查詢需求',
+  sql_generation: '產生 SQL',
+  validation: '驗證 SQL',
+  execution: '執行 SQL',
+  repair: '修復 SQL',
+  result_validation: '驗證查詢結果'
+}
+
+const workflowStatusLabels = {
+  started: '進行中',
+  completed: '已完成',
+  passed: '通過',
+  failed: '失敗',
+  retrying: '重試中',
+  skipped: '略過'
+}
+
+const formatWorkflowStage = (event) => {
+  const payload = event?.payload || {}
+  const stage = workflowStageLabels[payload.stage] || payload.stage || 'SQL workflow'
+  const status = workflowStatusLabels[payload.status] || payload.status || ''
+  const attempt = payload.attempt ? `（第 ${payload.attempt} 次）` : ''
+  return [stage, status].filter(Boolean).join(' · ') + attempt
+}
+
 const normalizeUploadUrl = (rawPath) => {
   if (!rawPath) return null
   let safePath = rawPath.replace(/\\/g, '/')
@@ -303,7 +329,7 @@ watch(renderedContent, async () => {
             :class="`execution-${event.type}`"
           >
             <div class="execution-event-title">
-              <span>{{ event.type === 'thinking' ? '思考階段' : (event.payload?.name || event.type) }}</span>
+              <span>{{ event.type === 'thinking' ? '思考階段' : (event.type === 'workflow_stage' ? formatWorkflowStage(event) : (event.payload?.name || event.type)) }}</span>
               <span v-if="event.payload?.status" class="execution-event-status">{{ event.payload.status }}</span>
               <span v-if="event.payload?.call_id" class="execution-call-id">{{ event.payload.call_id }}</span>
             </div>

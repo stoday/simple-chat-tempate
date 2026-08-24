@@ -32,6 +32,8 @@ export const applyAgentEvent = (message, event) => {
     next.executionEvents.push(event)
   } else if (event.type === 'tool_call' || event.type === 'tool_result') {
     next.executionEvents.push(event)
+  } else if (event.type === 'workflow_stage') {
+    next.executionEvents.push(event)
   } else if (event.type === 'done') {
     next.status = 'completed'
     next.streamTerminal = true
@@ -54,7 +56,7 @@ export const hydrateAgentEventState = (message, events = []) => {
     .filter((event) => String(event.message_id) === String(message.id))
     .sort((left, right) => left.sequence - right.sequence)
   const executionEvents = ordered.filter((event) => (
-    event.type === 'thinking' || event.type === 'tool_call' || event.type === 'tool_result'
+    event.type === 'thinking' || event.type === 'tool_call' || event.type === 'tool_result' || event.type === 'workflow_stage'
   ))
   const terminal = [...ordered].reverse().find((event) => TERMINAL_TYPES.has(event.type))
   const latestThinking = [...ordered].reverse().find((event) => event.type === 'thinking')

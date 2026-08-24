@@ -29,6 +29,16 @@ const responseWithByteCuts = (text, cuts) => {
 }
 
 
+const workflowEvent = (sequence, payload) => ({
+  version: 1,
+  type: 'workflow_stage',
+  message_id: '11',
+  sequence,
+  timestamp: `2026-08-24T00:00:0${sequence}.000Z`,
+  payload
+})
+
+
 describe('readSseEvents', () => {
   it('parses versioned events across arbitrary UTF-8 network chunks', async () => {
     const body = [
@@ -95,6 +105,23 @@ describe('applyAgentEvent', () => {
       'tool_result'
     ])
   })
+
+  it('keeps workflow stage events in the message execution timeline', () => {
+    const message = {
+      id: '11',
+      content: '',
+      lastSequence: 0,
+      executionEvents: [],
+      streamTerminal: false,
+      thinkingStatus: ''
+    }
+    const event = workflowEvent(1, { stage: 'planning', status: 'completed' })
+
+    const next = applyAgentEvent(message, event)
+
+    expect(next.executionEvents).toEqual([event])
+    expect(next.lastSequence).toBe(1)
+  })
 })
 
 
@@ -115,6 +142,22 @@ describe('hydrateAgentEventState', () => {
     expect(hydrated.lastSequence).toBe(2)
     expect(hydrated.thinkingStatus).toBe('Checking')
     expect(hydrated.executionEvents).toEqual([events[0]])
+  })
+
+  it('hydrates persisted workflow stage events after reload', () => {
+    const events = [
+      workflowEvent(1, { stage: 'planning', status: 'completed' }),
+      { version: 1, type: 'done', message_id: '11', sequence: 2, timestamp: 'two', payload: {} }
+    ]
+
+    const hydrated = hydrateAgentEventState({
+      id: '11',
+      content: '',
+      status: 'pending'
+    }, events)
+
+    expect(hydrated.executionEvents).toEqual([events[0]])
+    expect(hydrated.streamTerminal).toBe(true)
   })
 })
 

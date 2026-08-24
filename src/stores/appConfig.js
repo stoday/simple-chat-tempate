@@ -9,7 +9,7 @@ const DEFAULT_CONFIG = {
     login_subtitle: 'Your premium AI assistant',
   },
   app: {
-    version: '1.5',
+    version: '1.6',
   },
   roles: {
     allowed: ['admin', 'user'],

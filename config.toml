@@ -22,7 +22,7 @@ user_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", "ppt", "pptx"
 rag_extensions = [".pdf", ".doc", ".docx", ".md", ".csv", ".txt", ".xls", ".xlsx", ".ppt", ".pptx"]
 
 [app]
-version = "1.5"
+version = "1.6"
 
 # =============================================================================
 # 伺服器設定 - 統一管理所有 URL 和連接埠

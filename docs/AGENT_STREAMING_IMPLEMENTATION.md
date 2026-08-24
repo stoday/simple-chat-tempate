@@ -31,6 +31,13 @@ The only event types are:
 | `done` | Successful terminal event; may include `payload.conversation_title` so the sidebar updates immediately |
 | `stopped` | User-requested terminal event |
 | `error` | Safe terminal error code/message; no traceback or provider secret |
+| `workflow_stage` | Safe progress for the SQL workflow, including stage, status, and optional repair attempt |
+
+`workflow_stage` is emitted only while the database query tool is running the
+structured SQL workflow. It uses the same persistence, replay, SSE, reducer,
+and execution-details UI path as the other public events. The payload contains
+workflow metadata only; it does not expose prompts, chain-of-thought, SQL
+secrets, or tracebacks. Non-database replies do not emit this event.
 
 The old `{token}` / `[DONE]` format is intentionally unsupported. The client rejects unknown protocol versions and sequence gaps, then reconnects using its last successfully applied sequence. Duplicate sequences are ignored.
 

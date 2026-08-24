@@ -326,3 +326,54 @@ def test_stream_replay_requires_message_owner_and_events_follow_conversation_ret
             "SELECT COUNT(*) FROM message_event WHERE message_id = ?", (message_id,)
         ).fetchone()[0]
     assert remaining == 0
+
+
+def test_sql_workflow_stage_events_are_streamed_through_existing_sse_contract(
+    client, monkeypatch
+):
+    import backend.main as main
+    import backend.tools as tools
+
+    def fake_build_reply(*args, **kwargs):
+        result_queue = args[-1]
+        tools._emit_sql_workflow_stage(
+            {"stage": "planning", "status": "started"}
+        )
+        tools._emit_sql_workflow_stage(
+            {"stage": "planning", "status": "completed"}
+        )
+        result_queue.put(("event", ("answer_delta", {"delta": "Workflow answer"})))
+        return "Workflow answer"
+
+    monkeypatch.setattr(main, "build_reply", fake_build_reply)
+    monkeypatch.setattr(main, "_generate_conversation_title", lambda content: "SQL workflow")
+    monkeypatch.setattr(main, "SIMULATED_REPLY_DELAY", 0)
+
+    _, _, _, token = bootstrap_admin_and_user(client)
+    conversation_id = create_conversation(client, token, "New Chat")
+    created = client.post(
+        "/api/messages",
+        data={"content": "查詢產品", "conversation_id": str(conversation_id)},
+        headers=auth_header(token),
+    )
+    assert created.status_code == 200, created.text
+    message_id = created.json()["reply"]["id"]
+
+    streamed = client.get(
+        f"/api/messages/{message_id}/stream",
+        headers=auth_header(token),
+    )
+
+    assert streamed.status_code == 200
+    events = _parse_sse(streamed.text)
+    assert [event["data"]["type"] for event in events] == [
+        "conversation_title",
+        "workflow_stage",
+        "workflow_stage",
+        "answer_delta",
+        "done",
+    ]
+    assert events[1]["data"]["payload"] == {
+        "stage": "planning",
+        "status": "started",
+    }

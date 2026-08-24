@@ -57,4 +57,32 @@ describe('ChatMessage agent execution details', () => {
     expect(wrapper.text()).toContain('可保留的部分')
     expect(wrapper.text()).toContain('Response generation failed.')
   })
+
+  it('renders SQL workflow stages with readable labels and statuses', () => {
+    const wrapper = mount(ChatMessage, { props: { message: {
+      id: '13',
+      role: 'assistant',
+      content: '查詢完成',
+      status: 'completed',
+      files: [],
+      executionEvents: [
+        {
+          type: 'workflow_stage',
+          sequence: 1,
+          payload: { stage: 'planning', status: 'completed' }
+        },
+        {
+          type: 'workflow_stage',
+          sequence: 2,
+          payload: { stage: 'repair', status: 'started', attempt: 1 }
+        }
+      ]
+    } } })
+
+    expect(wrapper.text()).toContain('分析查詢需求')
+    expect(wrapper.text()).toContain('已完成')
+    expect(wrapper.text()).toContain('修復 SQL')
+    expect(wrapper.text()).toContain('第 1 次')
+    expect(wrapper.text()).not.toContain('workflow_stage')
+  })
 })

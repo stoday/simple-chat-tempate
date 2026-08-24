@@ -1,6 +1,7 @@
 # type: ignore
 import akasha
 import akasha.agent.agent_tools as at
+from contextvars import ContextVar
 from .rag_state import get_rag_data_sources, get_rag_instance
 import pandas as pd
 import os
@@ -11,12 +12,33 @@ import subprocess
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import List
+from typing import Any, List
 import rich
 import traceback
 from .database import get_connection, load_llm_config
 from .rag_library import get_searchable_rag_sources
 from .sql_workflow import run_sql_workflow
+
+
+_sql_workflow_progress_sink: ContextVar[Any] = ContextVar(
+    "sql_workflow_progress_sink", default=None
+)
+
+
+def set_sql_workflow_progress_sink(sink: Any):
+    """Install a per-worker sink for safe SQL workflow progress events."""
+
+    return _sql_workflow_progress_sink.set(sink)
+
+
+def reset_sql_workflow_progress_sink(token: Any) -> None:
+    _sql_workflow_progress_sink.reset(token)
+
+
+def _emit_sql_workflow_stage(event: dict[str, Any]) -> None:
+    sink = _sql_workflow_progress_sink.get()
+    if sink is not None:
+        sink(event)
 
 
 def _fetch_rag_summaries():
@@ -480,6 +502,7 @@ descriptive wmmta, and use TOP rather than LIMIT when a row limit is required.
                 repair_agent, make_repair_prompt(sql, plan, issues, source)
             ),
             execute_sql=execute_sql_query,
+            on_stage=_emit_sql_workflow_stage,
         )
     except Exception as exc:
         return json.dumps(

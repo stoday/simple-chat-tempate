@@ -43,7 +43,12 @@ from .streaming_events import (
 
 import akasha
 from akasha.helper import call_model, handle_embeddings, handle_model
-from .tools import get_agent, clear_agent_cache
+from .tools import (
+    clear_agent_cache,
+    get_agent,
+    reset_sql_workflow_progress_sink,
+    set_sql_workflow_progress_sink,
+)
 
 load_dotenv()
 
@@ -744,16 +749,22 @@ def _run_reply_worker(
 
             # 2. 進行正式的回覆生成
             files = [MessageFileResponse(**item) for item in files_payload]
-            reply_payload = build_reply(
-                content,
-                files,
-                conn,
-                conversation_id,
-                parent_message_id,
-                owner_user_id,
-                owner_display_name,
-                result_queue,
+            progress_token = set_sql_workflow_progress_sink(
+                lambda event: result_queue.put(("event", ("workflow_stage", event)))
             )
+            try:
+                reply_payload = build_reply(
+                    content,
+                    files,
+                    conn,
+                    conversation_id,
+                    parent_message_id,
+                    owner_user_id,
+                    owner_display_name,
+                    result_queue,
+                )
+            finally:
+                reset_sql_workflow_progress_sink(progress_token)
             result_queue.put(("ok", reply_payload))
         finally:
             conn.close()
